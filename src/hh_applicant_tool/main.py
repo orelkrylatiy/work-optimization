@@ -302,8 +302,6 @@ class HHApplicantTool(MegaTool):
             if page + 1 >= r.get("pages", 0):
                 break
 
-    # TODO: добавить еще методов или те удалить?
-
     def save_token(self) -> bool:
         if self.api_client.access_token != self.config.get("token", {}).get(
             "access_token"
@@ -383,7 +381,6 @@ class HHApplicantTool(MegaTool):
             session=self.openai_session,
         )
 
-    # TODO: вынести в миксин какой
     def _extract_xsrf_token(self, content: str) -> str:
         xsrf_token_marker = ',"xsrfToken":"'
         s1 = content.find(xsrf_token_marker)

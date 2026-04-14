@@ -35,9 +35,16 @@ T = TypeVar("T")
 logger = logging.getLogger(__package__)
 
 
-# Thread-safe
 @dataclass
 class BaseClient:
+    """Базовый thread-safe HTTP-клиент для hh.ru API.
+
+    Обеспечивает:
+    - rate limiting (задержка между запросами через self.delay)
+    - автоматическую подстановку заголовков User-Agent и X-HH-App-Active
+    - разбор JSON-ответов и выброс ApiError-исключений по статус-коду
+    """
+
     base_url: str
     _: dataclasses.KW_ONLY
     user_agent: str | None = None
@@ -49,8 +56,6 @@ class BaseClient:
         assert self.base_url.endswith("/"), "base_url must ends with /"
         self.delay = self.delay or DEFAULT_DELAY
         self.user_agent = self.user_agent or generate_android_useragent()
-
-        # logger.debug(f"user agent: {self.user_agent}")
 
         if not self.session:
             logger.debug("create new session")
@@ -83,7 +88,6 @@ class BaseClient:
         params.update(kwargs)
         url = self.resolve_url(endpoint)
         with self.lock:
-            # На серваке какая-то анти-DDOS система
             if (
                 delay := (self.delay if delay is None else delay)
                 - time.monotonic()
@@ -95,7 +99,6 @@ class BaseClient:
             payload = {
                 ["data", "json"][as_json] if has_body else "params": params
             }
-            # logger.debug(f"request info: {method = }, {url = }, {headers = }, params = {repr(params)[:255]}")
             response = self.session.request(
                 method,
                 url,
@@ -104,12 +107,8 @@ class BaseClient:
                 allow_redirects=False,
             )
             try:
-                # У этих лошков сервер не отдает Content-Length, а кривое API
-                # отдает пустые ответы, например, при отклике на вакансии,
-                # и мы не можем узнать содержит ли ответ тело
-                # 'Server': 'ddos-guard'
-                # ...
-                # 'Transfer-Encoding': 'chunked'
+                # API не отдаёт Content-Length и может вернуть пустое тело
+                # (например, при отклике на вакансию)
                 try:
                     rv = response.json() if response.text else {}
                 except json.JSONDecodeError as ex:
@@ -149,6 +148,12 @@ class BaseClient:
 
 @dataclass
 class OAuthClient(BaseClient):
+    """OAuth 2.0 клиент для авторизации на hh.ru.
+
+    Используется для получения и обновления access_token через
+    Authorization Code Flow. По умолчанию применяет Android client credentials.
+    """
+
     client_id: str | None = None
     client_secret: str | None = None
     _: dataclasses.KW_ONLY
@@ -205,7 +210,13 @@ class OAuthClient(BaseClient):
 
 @dataclass
 class ApiClient(BaseClient):
-    # Например, для просмотра информации о компании токен не нужен
+    """Клиент hh.ru REST API с автоматическим обновлением access_token.
+
+    При получении 403 Forbidden и истёкшем access_token автоматически
+    вызывает OAuth refresh и повторяет запрос. Токен не обязателен —
+    часть эндпоинтов (информация о компании, справочники) доступна публично.
+    """
+
     access_token: str | None = None
     refresh_token: str | None = None
     access_expires_at: int = 0
@@ -227,17 +238,13 @@ class ApiClient(BaseClient):
             session=self.session,
         )
 
-    def _default_headers(
-        self,
-    ) -> dict[str, str]:
+    def _default_headers(self) -> dict[str, str]:
         headers = super()._default_headers()
         if not self.access_token:
             return headers
-        # Это очень интересно, что access token'ы начинаются с USER, т.е. API может содержать какую-то уязвимость, связанную с этим
         assert self.access_token.startswith("USER")
         return headers | {"authorization": f"Bearer {self.access_token}"}
 
-    # Реализовано автоматическое обновление токена
     def request(
         self,
         method: AllowedMethods,
@@ -254,14 +261,11 @@ class ApiClient(BaseClient):
 
         try:
             return do_request()
-        # TODO: добавить класс для ошибок типа AccessTokenExpired
         except errors.Forbidden as ex:
             if not self.is_access_expired or not self.refresh_token:
                 raise ex
             logger.info("try to refresh access_token")
-            # Пробуем обновить токен
             self.refresh_access_token()
-            # И повторно отправляем запрос
             return do_request()
 
     def handle_access_token(self, token: AccessToken) -> None:

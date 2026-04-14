@@ -21,8 +21,6 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     if conn.total_changes > changes_before:
         logger.info("Применена схема бд")
-    # else:
-    #     logger.debug("База данных не изменилась.")
 
 
 def list_migrations() -> list[str]:
@@ -37,10 +35,3 @@ def apply_migration(conn: sqlite3.Connection, name: str) -> None:
     conn.executescript(
         (MIGRATION_PATH / f"{name}.sql").read_text(encoding="utf-8")
     )
-
-
-# def model2table(o: type) -> str:
-#     name: str = o.__name__
-#     if name.endswith("Model"):
-#         name = name[:-5]
-#     return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()

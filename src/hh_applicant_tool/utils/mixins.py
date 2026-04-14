@@ -46,9 +46,9 @@ class VersionChecker:
                     "_next_version_check", datetime.now() + timedelta(hours=1)
                 )
 
-        if (
-            latest_ver := self.storage.settings.get_value("_latest_version")
-        ) and (cur_ver := get_package_version()):
+        if (latest_ver := self.storage.settings.get_value("_latest_version")) and (
+            cur_ver := get_package_version()
+        ):
             if parse_version(latest_ver) > parse_version(cur_ver):
                 log.warning(
                     "ТЕКУЩАЯ ВЕРСИЯ %s УСТАРЕЛА. РЕКОМЕНДУЕТСЯ ОБНОВИТЬ ЕЁ ДО ВЕРСИИ %s.",

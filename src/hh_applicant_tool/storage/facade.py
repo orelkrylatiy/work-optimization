@@ -14,7 +14,17 @@ from .utils import init_db
 
 
 class StorageFacade:
-    """Единая точка доступа к persistence-слою."""
+    """Единая точка доступа к persistence-слою (SQLite).
+
+    Инициализирует схему БД при первом запуске и предоставляет
+    репозитории для каждой сущности:
+    - vacancies / skipped_vacancies — вакансии
+    - resumes — резюме пользователя
+    - negotiations — отклики/переписка
+    - employers / employer_sites — компании и их сайты
+    - vacancy_contacts — контакты из вакансий
+    - settings — key-value настройки (в т.ч. служебные _*)
+    """
 
     def __init__(self, conn: sqlite3.Connection):
         init_db(conn)

@@ -60,12 +60,6 @@ class ApiError(BadResponse):
             else str(self._data)
         )
 
-    #     def __getattr__(self, name: str) -> Any:
-    #         try:
-    #             return self._raw[name]
-    #         except KeyError as ex:
-    #             raise AttributeError(name) from ex
-
     def __str__(self) -> str:
         return self.message
 

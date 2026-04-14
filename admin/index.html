@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HH Admin Panel</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg2: #1a1d27;
+    --bg3: #242736;
+    --border: #2e3248;
+    --text: #e2e8f0;
+    --text2: #94a3b8;
+    --accent: #e8321c;
+    --accent2: #ff6b4a;
+    --green: #22c55e;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --radius: 8px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.5; }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Layout */
+  .app { display: flex; min-height: 100vh; }
+  .sidebar { width: 220px; background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; position: sticky; top: 0; height: 100vh; }
+  .sidebar-logo { padding: 20px 16px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); }
+  .sidebar-logo .logo-icon { width: 32px; height: 32px; background: var(--accent); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 16px; color: white; flex-shrink: 0; }
+  .sidebar-logo span { font-weight: 700; font-size: 15px; }
+  .nav { flex: 1; padding: 8px 0; overflow-y: auto; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 16px; cursor: pointer; color: var(--text2); border-left: 3px solid transparent; transition: all .15s; user-select: none; }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: rgba(232,50,28,.12); color: var(--accent2); border-left-color: var(--accent); }
+  .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+  .sidebar-profile { padding: 12px 16px; border-top: 1px solid var(--border); }
+  .sidebar-profile select { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; font-size: 13px; outline: none; }
+
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg2); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .topbar h1 { font-size: 18px; font-weight: 600; }
+  .content { flex: 1; padding: 24px; overflow-y: auto; }
+
+  /* Cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .card-label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; }
+  .card-value { font-size: 28px; font-weight: 700; }
+  .card-value.green { color: var(--green); }
+  .card-value.yellow { color: var(--yellow); }
+  .card-value.red { color: var(--red); }
+  .card-value.blue { color: var(--blue); }
+
+  /* Section */
+  .section { margin-bottom: 28px; }
+  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .section-title .badge { font-size: 11px; background: var(--bg3); border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: var(--text2); font-weight: 400; }
+
+  /* Table */
+  .table-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { background: var(--bg3); padding: 10px 14px; text-align: left; font-size: 12px; color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--bg3); }
+  tbody td { padding: 10px 14px; vertical-align: middle; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty-row td { text-align: center; color: var(--text2); padding: 32px; }
+
+  /* State badge */
+  .state { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .state-invitation { background: rgba(34,197,94,.15); color: var(--green); }
+  .state-discard, .state-rejection { background: rgba(239,68,68,.15); color: var(--red); }
+  .state-response, .state-phone_interview { background: rgba(245,158,11,.15); color: var(--yellow); }
+  .state-default { background: var(--bg3); color: var(--text2); }
+
+  /* Search / filter */
+  .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+  .filters input, .filters select { background: var(--bg2); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); padding: 7px 12px; font-size: 13px; outline: none; }
+  .filters input:focus, .filters select:focus { border-color: var(--accent2); }
+  .filters input { min-width: 220px; }
+
+  /* Buttons */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all .15s; }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: var(--border); }
+  .btn-success { background: rgba(34,197,94,.2); color: var(--green); border: 1px solid rgba(34,197,94,.3); }
+  .btn-success:hover { background: rgba(34,197,94,.3); }
+  .btn-danger { background: rgba(239,68,68,.2); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+  .btn-danger:hover { background: rgba(239,68,68,.3); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* Pagination */
+  .pagination { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .pagination span { color: var(--text2); font-size: 13px; }
+
+  /* Charts — simple bar */
+  .bar-chart { display: flex; flex-direction: column; gap: 6px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; }
+  .bar-label { width: 120px; font-size: 12px; color: var(--text2); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; flex-shrink: 0; }
+  .bar-track { flex: 1; background: var(--bg3); border-radius: 4px; height: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
+  .bar-count { font-size: 12px; color: var(--text2); width: 36px; text-align: right; flex-shrink: 0; }
+
+  /* Log viewer */
+  .log-box { background: #0a0c12; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; font-family: 'Courier New', monospace; font-size: 12px; height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; color: #c8d3e0; }
+  .log-box .log-error { color: #f87171; }
+  .log-box .log-warn { color: #fbbf24; }
+  .log-box .log-info { color: #86efac; }
+
+  /* Letter generator */
+  .letter-form { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .form-row.full { grid-template-columns: 1fr; }
+  .form-group label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 5px; font-weight: 600; }
+  .form-group input, .form-group textarea, .form-group select { width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); padding: 8px 12px; font-size: 13px; outline: none; resize: vertical; }
+  .form-group input:focus, .form-group textarea:focus { border-color: var(--accent2); }
+  .letter-result { margin-top: 16px; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; white-space: pre-wrap; font-size: 13px; line-height: 1.7; min-height: 80px; }
+
+  /* Run operations */
+  .run-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .run-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .run-card h3 { font-size: 15px; margin-bottom: 6px; }
+  .run-card p { color: var(--text2); font-size: 13px; margin-bottom: 14px; }
+  .run-card .run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .run-output { margin-top: 12px; background: #0a0c12; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; color: #c8d3e0; display: none; }
+
+  /* Loading spinner */
+  .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Toast */
+  #toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
+  .toast { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; box-shadow: var(--shadow); animation: slide-in .2s; max-width: 300px; }
+  .toast.success { border-left: 3px solid var(--green); }
+  .toast.error { border-left: 3px solid var(--red); }
+  @keyframes slide-in { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* Days chart */
+  .days-chart { display: flex; align-items: flex-end; gap: 4px; height: 80px; }
+  .day-col { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+  .day-bar { width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; transition: height .3s; }
+  .day-label { font-size: 10px; color: var(--text2); white-space: nowrap; }
+
+  /* Config editor */
+  .config-editor { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .config-row { display: flex; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border); gap: 12px; }
+  .config-row:last-child { border-bottom: none; }
+  .config-key { font-size: 13px; font-weight: 600; width: 180px; flex-shrink: 0; }
+  .config-val { flex: 1; font-size: 13px; color: var(--text2); font-family: monospace; word-break: break-all; }
+  .config-val.secret { color: var(--text2); font-style: italic; }
+
+  /* Salary */
+  .salary { color: var(--green); font-size: 12px; font-weight: 600; }
+
+  @media (max-width: 768px) {
+    .sidebar { width: 60px; }
+    .sidebar-logo span, .nav-item span, .sidebar-profile { display: none; }
+    .form-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">HH</div>
+      <span>Admin Panel</span>
+    </div>
+    <div class="nav" id="nav">
+      <div class="nav-item active" data-page="dashboard" onclick="goPage('dashboard')">
+        <span class="icon">📊</span><span>Дашборд</span>
+      </div>
+      <div class="nav-item" data-page="negotiations" onclick="goPage('negotiations')">
+        <span class="icon">💬</span><span>Отклики</span>
+      </div>
+      <div class="nav-item" data-page="vacancies" onclick="goPage('vacancies')">
+        <span class="icon">💼</span><span>Вакансии</span>
+      </div>
+      <div class="nav-item" data-page="skipped" onclick="goPage('skipped')">
+        <span class="icon">🚫</span><span>Пропущенные</span>
+      </div>
+      <div class="nav-item" data-page="employers" onclick="goPage('employers')">
+        <span class="icon">🏢</span><span>Работодатели</span>
+      </div>
+      <div class="nav-item" data-page="letter" onclick="goPage('letter')">
+        <span class="icon">✉️</span><span>Генератор писем</span>
+      </div>
+      <div class="nav-item" data-page="run" onclick="goPage('run')">
+        <span class="icon">▶️</span><span>Запуск задач</span>
+      </div>
+      <div class="nav-item" data-page="config" onclick="goPage('config')">
+        <span class="icon">⚙️</span><span>Настройки</span>
+      </div>
+      <div class="nav-item" data-page="logs" onclick="goPage('logs')">
+        <span class="icon">📋</span><span>Логи</span>
+      </div>
+    </div>
+    <div class="sidebar-profile">
+      <select id="profile-select" onchange="onProfileChange()">
+        <option value="default">default</option>
+      </select>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <h1 id="page-title">Дашборд</h1>
+      <div id="topbar-actions"></div>
+    </div>
+    <div class="content" id="content">
+      <div style="color:var(--text2);text-align:center;padding:60px">Загрузка...</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+const API = '';
+let currentProfile = 'default';
+let currentPage = 'dashboard';
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+async function init() {
+  await loadProfiles();
+  // Проверяем готовность системы
+  try {
+    const s = await api('/api/status');
+    if (!s.ready) {
+      showSetupPage(s);
+      return;
+    }
+  } catch(e) {}
+  goPage('dashboard');
+}
+
+function showSetupPage(status) {
+  document.getElementById('page-title').textContent = 'Первый запуск';
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  const c = document.getElementById('content');
+  const configPath = status.config_root || '?';
+  c.innerHTML = `
+    <div style="max-width:640px">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px">
+        <h2 style="font-size:18px;margin-bottom:8px">⚙️ Настройка HH Applicant Tool</h2>
+        <p style="color:var(--text2);margin-bottom:20px">База данных не найдена. Нужно авторизоваться в HH.ru чтобы инструмент создал профиль и базу данных.</p>
+
+        <div style="background:var(--bg3);border-radius:var(--radius);padding:14px;margin-bottom:16px;font-family:monospace;font-size:13px">
+          <div style="color:var(--text2);margin-bottom:6px;font-family:sans-serif;font-size:12px">Ожидаемый путь к данным:</div>
+          <span style="color:var(--accent2)">${configPath}</span>
+        </div>
+
+        <div style="border-left:3px solid var(--accent);padding-left:16px;margin-bottom:20px">
+          <p style="font-size:14px;font-weight:600;margin-bottom:8px">Шаги для запуска:</p>
+          <ol style="color:var(--text2);font-size:13px;line-height:2;padding-left:20px">
+            <li>Откройте терминал в папке проекта</li>
+            <li>Установите зависимости: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">pip install -e .</code></li>
+            <li>Авторизуйтесь: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">python -m hh_applicant_tool auth</code></li>
+            <li>После авторизации обновите страницу</li>
+          </ol>
+        </div>
+
+        <div style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.2);border-radius:var(--radius);padding:14px;margin-bottom:20px">
+          <p style="font-size:13px;color:var(--text2)"><span style="color:var(--blue)">💡 Docker-режим:</span> Если используете Docker, данные хранятся в <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">config/</code> в корне проекта. Запустите контейнер и обновите страницу.</p>
+        </div>
+
+        <button class="btn btn-primary" onclick="checkReady()">🔄 Проверить снова</button>
+      </div>
+    </div>`;
+}
+
+async function checkReady() {
+  try {
+    const s = await api('/api/status');
+    if (s.ready) {
+      toast('Система готова!');
+      await loadProfiles();
+      goPage('dashboard');
+    } else {
+      toast(`config: ${s.has_config ? '✓' : '✗'} | DB: ${s.has_db ? '✓' : '✗'}`, 'error');
+    }
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const r = await api('/api/profiles');
+    const sel = document.getElementById('profile-select');
+    sel.innerHTML = '';
+    if (r.profiles.length === 0) {
+      sel.innerHTML = '<option value="default">default</option>';
+    } else {
+      r.profiles.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p; opt.textContent = p;
+        sel.appendChild(opt);
+      });
+      currentProfile = r.profiles[0];
+      sel.value = currentProfile;
+    }
+  } catch(e) {}
+}
+
+function onProfileChange() {
+  currentProfile = document.getElementById('profile-select').value;
+  goPage(currentPage);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+const PAGE_TITLES = {
+  dashboard: 'Дашборд',
+  negotiations: 'Отклики',
+  vacancies: 'Вакансии',
+  skipped: 'Пропущенные вакансии',
+  employers: 'Работодатели',
+  letter: 'Генератор писем',
+  run: 'Запуск задач',
+  config: 'Настройки',
+  logs: 'Логи',
+};
+
+function goPage(page) {
+  currentPage = page;
+  document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
+  document.getElementById('topbar-actions').innerHTML = '';
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page);
+  });
+  const pages = { dashboard, negotiations, vacancies, skipped, employers, letter, run, config, logs };
+  if (pages[page]) pages[page]();
+}
+
+// ---------------------------------------------------------------------------
+// API helper
+// ---------------------------------------------------------------------------
+async function api(path, opts = {}) {
+  const url = path + (path.includes('?') ? '&' : '?') + 'profile=' + encodeURIComponent(currentProfile);
+  const resp = await fetch(url, opts);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({detail: resp.statusText}));
+    throw new Error(err.detail || resp.statusText);
+  }
+  return resp.json();
+}
+
+function toast(msg, type = 'success') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function stateHtml(state) {
+  const map = {
+    invitation: ['invitation', 'Приглашение'],
+    discard: ['discard', 'Отказ'],
+    rejection: ['rejection', 'Отклонено'],
+    response: ['response', 'Отклик'],
+    phone_interview: ['phone_interview', 'Тел. собес.'],
+  };
+  const [cls, label] = map[state] || ['default', state];
+  return `<span class="state state-${cls}">${label}</span>`;
+}
+
+function salary(row) {
+  if (!row.salary_from && !row.salary_to) return '<span style="color:var(--text2)">—</span>';
+  const cur = row.currency || '';
+  const from = row.salary_from ? `от ${row.salary_from.toLocaleString()}` : '';
+  const to = row.salary_to ? `до ${row.salary_to.toLocaleString()}` : '';
+  return `<span class="salary">${[from, to].filter(Boolean).join(' ')} ${cur}</span>`;
+}
+
+function timeAgo(dt) {
+  if (!dt) return '—';
+  const d = new Date(dt.replace(' ', 'T') + 'Z');
+  const diff = (Date.now() - d) / 1000;
+  if (diff < 60) return 'только что';
+  if (diff < 3600) return Math.floor(diff/60) + ' мин. назад';
+  if (diff < 86400) return Math.floor(diff/3600) + ' ч. назад';
+  return Math.floor(diff/86400) + ' д. назад';
+}
+
+// ---------------------------------------------------------------------------
+// Pages
+// ---------------------------------------------------------------------------
+
+// DASHBOARD
+async function dashboard() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+  try {
+    const d = await api('/api/stats');
+    const t = d.totals;
+
+    const stateColors = { invitation: 'green', discard: 'red', rejection: 'red', response: 'yellow', phone_interview: 'blue' };
+    const stateLabels = { invitation: 'Приглашений', discard: 'Отказов', rejection: 'Отклонено', response: 'Откликов', phone_interview: 'Тел. собес.' };
+
+    // State cards
+    let stateCards = '';
+    const stateMap = {};
+    d.negotiations_by_state.forEach(s => stateMap[s.state] = s.cnt);
+    for (const [st, label] of Object.entries(stateLabels)) {
+      const cnt = stateMap[st] || 0;
+      const color = stateColors[st] || '';
+      stateCards += `<div class="card"><div class="card-label">${label}</div><div class="card-value ${color}">${cnt}</div></div>`;
+    }
+
+    // Daily chart
+    const days = d.daily_applications;
+    const maxDay = Math.max(1, ...days.map(x => x.cnt));
+    let dayCols = '';
+    if (days.length) {
+      days.forEach(day => {
+        const h = Math.round((day.cnt / maxDay) * 64) + 4;
+        const label = day.day.slice(5); // MM-DD
+        dayCols += `<div class="day-col">
+          <div style="font-size:10px;color:var(--text2);margin-bottom:2px">${day.cnt}</div>
+          <div class="day-bar" style="height:${h}px"></div>
+          <div class="day-label">${label}</div>
+        </div>`;
+      });
+    } else {
+      dayCols = '<div style="color:var(--text2);font-size:13px;padding:20px">Нет данных</div>';
+    }
+
+    // Skip reasons
+    const maxSkip = Math.max(1, ...d.skip_reasons.map(x => x.cnt));
+    let skipBars = '';
+    d.skip_reasons.forEach(r => {
+      const pct = Math.round((r.cnt / maxSkip) * 100);
+      skipBars += `<div class="bar-row">
+        <div class="bar-label" title="${r.reason}">${r.reason}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+        <div class="bar-count">${r.cnt}</div>
+      </div>`;
+    });
+
+    // Recent negs
+    let recentRows = '';
+    if (d.recent_negotiations.length) {
+      d.recent_negotiations.forEach(n => {
+        const link = n.vacancy_url ? `<a href="${n.vacancy_url}" target="_blank">${n.vacancy_name || '—'}</a>` : (n.vacancy_name || '—');
+        recentRows += `<tr>
+          <td>${stateHtml(n.state)}</td>
+          <td>${link}</td>
+          <td>${n.employer_name || '—'}</td>
+          <td style="color:var(--text2)">${timeAgo(n.created_at)}</td>
+        </tr>`;
+      });
+    } else {
+      recentRows = '<tr class="empty-row"><td colspan="4">Нет откликов</td></tr>';
+    }
+
+    // Resume views
+    let resumeRows = '';
+    d.resume_views.forEach(r => {
+      resumeRows += `<tr>
+        <td>${r.title}</td>
+        <td>${r.total_views || 0}</td>
+        <td style="color:${r.new_views > 0 ? 'var(--green)' : 'var(--text2)'}">${r.new_views || 0}</td>
+      </tr>`;
+    });
+
+    c.innerHTML = `
+      <div class="section">
+        <div class="section-title">Общая статистика</div>
+        <div class="cards">
+          <div class="card"><div class="card-label">Всего откликов</div><div class="card-value">${t.negotiations}</div></div>
+          <div class="card"><div class="card-label">Вакансий в базе</div><div class="card-value blue">${t.vacancies}</div></div>
+          <div class="card"><div class="card-label">Работодателей</div><div class="card-value blue">${t.employers}</div></div>
+          <div class="card"><div class="card-label">Пропущено</div><div class="card-value">${t.skipped}</div></div>
+          ${stateCards}
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
+        <div class="section">
+          <div class="section-title">Отклики за 14 дней</div>
+          <div class="table-wrap" style="padding:16px">
+            <div class="days-chart">${dayCols}</div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Причины пропуска</div>
+          <div class="table-wrap" style="padding:16px">
+            ${skipBars || '<div style="color:var(--text2);font-size:13px">Нет данных</div>'}
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:24px">
+        <div class="section">
+          <div class="section-title">Последние отклики <span class="badge">${d.recent_negotiations.length}</span></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Статус</th><th>Вакансия</th><th>Работодатель</th><th>Время</th></tr></thead>
+            <tbody>${recentRows}</tbody></table>
+          </div>
+        </div>
+        <div class="section">
+          <div class="section-title">Резюме</div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Название</th><th>Всего</th><th>Новых</th></tr></thead>
+            <tbody>${resumeRows || '<tr class="empty-row"><td colspan="3">Нет данных</td></tr>'}</tbody></table>
+          </div>
+        </div>
+      </div>
+    `;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red);padding:20px">Ошибка: ${e.message}<br><br><span style="color:var(--text2);font-size:12px">Убедитесь что сервер запущен и БД существует</span></div>`;
+  }
+}
+
+// NEGOTIATIONS
+let negPage = 0;
+async function negotiations(state_filter) {
+  const c = document.getElementById('content');
+  const curState = state_filter !== undefined ? state_filter : (window._negState || '');
+  window._negState = curState;
+
+  c.innerHTML = `
+    <div class="filters">
+      <select id="state-filter" onchange="window._negState=this.value; negotiations(this.value)">
+        <option value="">Все статусы</option>
+        <option value="response">Отклик</option>
+        <option value="invitation">Приглашение</option>
+        <option value="discard">Отказ</option>
+        <option value="rejection">Отклонено</option>
+        <option value="phone_interview">Тел. собес.</option>
+      </select>
+    </div>
+    <div style="color:var(--text2)">Загрузка...</div>`;
+
+  document.getElementById('state-filter').value = curState;
+
+  try {
+    const stateQ = curState ? `&state=${encodeURIComponent(curState)}` : '';
+    const r = await api(`/api/negotiations?limit=50&offset=${negPage * 50}${stateQ}`);
+    let rows = '';
+    if (r.items.length) {
+      r.items.forEach(n => {
+        const link = n.vacancy_url ? `<a href="${n.vacancy_url}" target="_blank">${n.vacancy_name || n.id}</a>` : (n.vacancy_name || n.id);
+        const sal = salary(n);
+        rows += `<tr>
+          <td>${stateHtml(n.state)}</td>
+          <td style="max-width:260px">${link}</td>
+          <td>${n.employer_name || '—'}</td>
+          <td>${sal}</td>
+          <td style="color:var(--text2)">${timeAgo(n.created_at)}</td>
+        </tr>`;
+      });
+    } else {
+      rows = '<tr class="empty-row"><td colspan="5">Нет откликов</td></tr>';
+    }
+
+    c.innerHTML = `
+      <div class="filters">
+        <select id="state-filter" onchange="window._negState=this.value; negotiations(this.value)">
+          <option value="">Все статусы</option>
+          <option value="response">Отклик</option>
+          <option value="invitation">Приглашение</option>
+          <option value="discard">Отказ</option>
+          <option value="rejection">Отклонено</option>
+          <option value="phone_interview">Тел. собес.</option>
+        </select>
+        <span style="color:var(--text2);font-size:13px">Всего: ${r.total}</span>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Статус</th><th>Вакансия</th><th>Работодатель</th><th>Зарплата</th><th>Время</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-secondary" onclick="negPage=Math.max(0,negPage-1);negotiations()" ${negPage===0?'disabled':''}>← Назад</button>
+        <span>Страница ${negPage+1}</span>
+        <button class="btn btn-secondary" onclick="negPage++;negotiations()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
+      </div>`;
+    document.getElementById('state-filter').value = curState;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+// VACANCIES
+let vacPage = 0;
+let vacSearch = '';
+async function vacancies() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="filters">
+      <input id="vac-search" placeholder="Поиск по названию..." value="${vacSearch}"
+        onkeydown="if(event.key==='Enter'){vacSearch=this.value;vacPage=0;vacancies()}"/>
+      <button class="btn btn-secondary" onclick="vacSearch=document.getElementById('vac-search').value;vacPage=0;vacancies()">Найти</button>
+    </div>
+    <div style="color:var(--text2)">Загрузка...</div>`;
+
+  try {
+    const sq = vacSearch ? `&search=${encodeURIComponent(vacSearch)}` : '';
+    const r = await api(`/api/vacancies?limit=50&offset=${vacPage*50}${sq}`);
+    let rows = '';
+    if (r.items.length) {
+      r.items.forEach(v => {
+        const link = v.alternate_url ? `<a href="${v.alternate_url}" target="_blank">${v.name}</a>` : v.name;
+        rows += `<tr>
+          <td style="max-width:280px">${link}</td>
+          <td>${v.employer_name || '—'}</td>
+          <td>${v.area_name || '—'}</td>
+          <td>${salary(v)}</td>
+          <td style="color:var(--text2)">${v.experience || '—'}</td>
+          <td style="color:var(--text2)">${timeAgo(v.created_at)}</td>
+        </tr>`;
+      });
+    } else {
+      rows = '<tr class="empty-row"><td colspan="6">Нет вакансий</td></tr>';
+    }
+
+    c.innerHTML = `
+      <div class="filters">
+        <input id="vac-search" placeholder="Поиск по названию..." value="${vacSearch}"
+          onkeydown="if(event.key==='Enter'){vacSearch=this.value;vacPage=0;vacancies()}"/>
+        <button class="btn btn-secondary" onclick="vacSearch=document.getElementById('vac-search').value;vacPage=0;vacancies()">Найти</button>
+        <span style="color:var(--text2);font-size:13px">Всего: ${r.total}</span>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Вакансия</th><th>Работодатель</th><th>Город</th><th>Зарплата</th><th>Опыт</th><th>Добавлена</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-secondary" onclick="vacPage=Math.max(0,vacPage-1);vacancies()" ${vacPage===0?'disabled':''}>← Назад</button>
+        <span>Страница ${vacPage+1}</span>
+        <button class="btn btn-secondary" onclick="vacPage++;vacancies()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
+      </div>`;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+// SKIPPED
+let skipPage = 0;
+async function skipped() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+  try {
+    const r = await api(`/api/skipped?limit=50&offset=${skipPage*50}`);
+    let rows = '';
+    if (r.items.length) {
+      r.items.forEach(s => {
+        const link = s.alternate_url ? `<a href="${s.alternate_url}" target="_blank">${s.name || s.vacancy_id}</a>` : (s.name || s.vacancy_id);
+        rows += `<tr>
+          <td style="max-width:260px">${link}</td>
+          <td>${s.employer_name || '—'}</td>
+          <td style="max-width:200px;color:var(--yellow)">${s.reason}</td>
+          <td style="color:var(--text2)">${timeAgo(s.created_at)}</td>
+        </tr>`;
+      });
+    } else {
+      rows = '<tr class="empty-row"><td colspan="4">Нет пропущенных</td></tr>';
+    }
+    c.innerHTML = `
+      <div style="margin-bottom:12px;color:var(--text2);font-size:13px">Всего: ${r.total}</div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Вакансия</th><th>Работодатель</th><th>Причина</th><th>Время</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-secondary" onclick="skipPage=Math.max(0,skipPage-1);skipped()" ${skipPage===0?'disabled':''}>← Назад</button>
+        <span>Страница ${skipPage+1}</span>
+        <button class="btn btn-secondary" onclick="skipPage++;skipped()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
+      </div>`;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+// EMPLOYERS
+let empPage = 0;
+let empSearch = '';
+async function employers() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="filters">
+      <input id="emp-search" placeholder="Поиск по названию..." value="${empSearch}"
+        onkeydown="if(event.key==='Enter'){empSearch=this.value;empPage=0;employers()}"/>
+      <button class="btn btn-secondary" onclick="empSearch=document.getElementById('emp-search').value;empPage=0;employers()">Найти</button>
+    </div>
+    <div style="color:var(--text2)">Загрузка...</div>`;
+  try {
+    const sq = empSearch ? `&search=${encodeURIComponent(empSearch)}` : '';
+    const r = await api(`/api/employers?limit=50&offset=${empPage*50}${sq}`);
+    let rows = '';
+    if (r.items.length) {
+      r.items.forEach(e => {
+        const link = e.alternate_url ? `<a href="${e.alternate_url}" target="_blank">${e.name}</a>` : e.name;
+        const site = e.site_url ? `<a href="${e.site_url.startsWith('http') ? '' : 'https://'}${e.site_url}" target="_blank">${e.site_url.replace(/^https?:\/\//, '').substring(0,30)}</a>` : '—';
+        rows += `<tr>
+          <td style="max-width:220px">${link}</td>
+          <td>${e.area_name || '—'}</td>
+          <td>${site}</td>
+          <td style="color:var(--blue)">${e.applications_count || 0}</td>
+        </tr>`;
+      });
+    } else {
+      rows = '<tr class="empty-row"><td colspan="4">Нет работодателей</td></tr>';
+    }
+    c.innerHTML = `
+      <div class="filters">
+        <input id="emp-search" placeholder="Поиск по названию..." value="${empSearch}"
+          onkeydown="if(event.key==='Enter'){empSearch=this.value;empPage=0;employers()}"/>
+        <button class="btn btn-secondary" onclick="empSearch=document.getElementById('emp-search').value;empPage=0;employers()">Найти</button>
+        <span style="color:var(--text2);font-size:13px">Всего: ${r.total}</span>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Компания</th><th>Город</th><th>Сайт</th><th>Откликов</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-secondary" onclick="empPage=Math.max(0,empPage-1);employers()" ${empPage===0?'disabled':''}>← Назад</button>
+        <span>Страница ${empPage+1}</span>
+        <button class="btn btn-secondary" onclick="empPage++;employers()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
+      </div>`;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+// LETTER GENERATOR
+async function letter() {
+  const c = document.getElementById('content');
+  // Load resumes for dropdown
+  let resumeOpts = '<option value="">— не указано —</option>';
+  try {
+    const r = await api('/api/resumes');
+    r.items.forEach(res => {
+      resumeOpts += `<option value="${res.title}">${res.title}</option>`;
+    });
+  } catch(e) {}
+
+  c.innerHTML = `
+    <div class="letter-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Название вакансии *</label>
+          <input id="l-name" placeholder="например: Python Backend Developer"/>
+        </div>
+        <div class="form-group">
+          <label>Работодатель</label>
+          <input id="l-emp" placeholder="Название компании"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Моё резюме / должность</label>
+          <select id="l-resume">${resumeOpts}</select>
+        </div>
+        <div class="form-group">
+          <label>Дополнительно</label>
+          <input id="l-extra" placeholder="Особые пожелания к стилю письма"/>
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Описание вакансии (опционально)</label>
+          <textarea id="l-desc" rows="4" placeholder="Вставьте текст описания вакансии для более персонализированного письма..."></textarea>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="l-btn" onclick="generateLetter()">✨ Сгенерировать письмо</button>
+      <div id="l-result" class="letter-result" style="display:none"></div>
+      <div style="margin-top:10px;display:flex;gap:8px" id="l-actions" style="display:none"></div>
+    </div>`;
+}
+
+async function generateLetter() {
+  const btn = document.getElementById('l-btn');
+  const result = document.getElementById('l-result');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Генерирую...';
+  result.style.display = 'none';
+
+  try {
+    const r = await fetch('/api/generate-letter?profile=' + encodeURIComponent(currentProfile), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        vacancy_name: document.getElementById('l-name').value,
+        employer_name: document.getElementById('l-emp').value,
+        resume_title: document.getElementById('l-resume').value,
+        vacancy_description: document.getElementById('l-desc').value,
+        extra: document.getElementById('l-extra').value,
+        profile: currentProfile,
+      })
+    });
+    if (!r.ok) {
+      const e = await r.json();
+      throw new Error(e.detail);
+    }
+    const data = await r.json();
+    result.style.display = 'block';
+    result.textContent = data.letter;
+
+    // Copy button
+    const acts = document.getElementById('l-actions');
+    acts.style.display = 'flex';
+    acts.innerHTML = `<button class="btn btn-secondary" onclick="navigator.clipboard.writeText(document.getElementById('l-result').textContent);toast('Скопировано!')">📋 Копировать</button>
+    <button class="btn btn-secondary" onclick="generateLetter()">🔄 Перегенерировать</button>`;
+    toast('Письмо сгенерировано!');
+  } catch(e) {
+    result.style.display = 'block';
+    result.style.color = 'var(--red)';
+    result.textContent = 'Ошибка: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '✨ Сгенерировать письмо';
+  }
+}
+
+// RUN OPERATIONS
+function run() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="run-grid">
+      <div class="run-card">
+        <h3>📤 Обновить резюме</h3>
+        <p>Поднять резюме в поиске (publish). Выполняется мгновенно.</p>
+        <div class="run-actions">
+          <button class="btn btn-success" onclick="runOp('update-resumes', this, false)">▶ Запустить</button>
+        </div>
+        <div class="run-output" id="out-update-resumes"></div>
+      </div>
+      <div class="run-card">
+        <h3>🎯 Автоотклики</h3>
+        <p>Автоматически откликнуться на вакансии по настроенным параметрам.</p>
+        <div class="run-actions">
+          <button class="btn btn-secondary" onclick="runOp('apply-vacancies', this, true)">🧪 Dry-run</button>
+          <button class="btn btn-danger" onclick="if(confirm('Запустить реальные отклики?'))runOp('apply-vacancies', this, false)">▶ Запустить</button>
+        </div>
+        <div class="run-output" id="out-apply-vacancies"></div>
+      </div>
+    </div>
+    <div style="margin-top:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:13px">
+      ⚠️ Операции запускаются в фоне и могут занять несколько минут. Не закрывайте страницу до завершения.
+    </div>`;
+}
+
+async function runOp(op, btn, dryRun) {
+  const outEl = document.getElementById('out-' + op);
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span>';
+  outEl.style.display = 'block';
+  outEl.textContent = 'Запуск...';
+
+  const url = `/api/run/${op}?profile=${encodeURIComponent(currentProfile)}`;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({profile: currentProfile, dry_run: dryRun})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail);
+    const out = [data.stdout, data.stderr].filter(Boolean).join('\n---stderr---\n');
+    outEl.textContent = out || '(нет вывода)';
+    if (data.returncode === 0) toast(`${op} завершён успешно`);
+    else toast(`${op} завершён с кодом ${data.returncode}`, 'error');
+  } catch(e) {
+    outEl.textContent = 'Ошибка: ' + e.message;
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = orig;
+  }
+}
+
+// CONFIG
+async function config() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+  try {
+    const data = await api('/api/config');
+    let rows = '';
+    const renderVal = (v) => {
+      if (v === '***') return `<span class="config-val secret">*** скрыто ***</span>`;
+      if (typeof v === 'object' && v !== null) return `<span class="config-val" style="color:var(--blue)">{объект}</span>`;
+      return `<span class="config-val">${String(v)}</span>`;
+    };
+
+    const renderSection = (obj, prefix = '') => {
+      let html = '';
+      for (const [k, v] of Object.entries(obj)) {
+        const key = prefix ? `${prefix}.${k}` : k;
+        if (typeof v === 'object' && v !== null && v !== '***') {
+          html += `<div class="config-row" style="background:var(--bg3)"><div class="config-key" style="color:var(--accent2)">${key}</div><div class="config-val" style="color:var(--text2);font-style:italic">↓</div></div>`;
+          html += renderSection(v, key);
+        } else {
+          html += `<div class="config-row"><div class="config-key">${key}</div>${renderVal(v)}</div>`;
+        }
+      }
+      return html;
+    };
+
+    rows = renderSection(data);
+
+    c.innerHTML = `
+      <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center">
+        <span style="color:var(--text2);font-size:13px">Токены и пароли скрыты. Редактировать можно только безопасные параметры.</span>
+      </div>
+      <div class="config-editor">${rows}</div>
+
+      <div class="section" style="margin-top:24px">
+        <div class="section-title">Настройки OpenAI</div>
+        <div class="letter-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Модель</label>
+              <input id="cfg-model" placeholder="gpt-4o-mini" value="${data.openai?.model || ''}"/>
+            </div>
+            <div class="form-group">
+              <label>Base URL (опционально)</label>
+              <input id="cfg-baseurl" placeholder="https://api.openai.com/v1" value="${data.openai?.base_url || ''}"/>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Задержка между запросами к HH API (сек)</label>
+              <input id="cfg-delay" type="number" step="0.1" min="0.1" value="${data.api_delay || 0.345}"/>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="saveConfig()">💾 Сохранить</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+async function saveConfig() {
+  const payload = {
+    api_delay: parseFloat(document.getElementById('cfg-delay').value) || 0.345,
+    openai: {
+      model: document.getElementById('cfg-model').value,
+      base_url: document.getElementById('cfg-baseurl').value,
+    }
+  };
+  try {
+    const r = await fetch('/api/config?profile=' + encodeURIComponent(currentProfile), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({data: payload})
+    });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    toast('Настройки сохранены!');
+  } catch(e) {
+    toast(e.message, 'error');
+  }
+}
+
+// LOGS
+async function logs() {
+  const c = document.getElementById('content');
+  document.getElementById('topbar-actions').innerHTML =
+    `<button class="btn btn-secondary" onclick="logs()">🔄 Обновить</button>`;
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+  try {
+    const r = await api('/api/logs?lines=300');
+    const box = document.createElement('div');
+    box.className = 'log-box';
+    r.lines.forEach(line => {
+      const span = document.createElement('span');
+      if (/error|exception|traceback/i.test(line)) span.className = 'log-error';
+      else if (/warn/i.test(line)) span.className = 'log-warn';
+      else if (/info|успешно|применён/i.test(line)) span.className = 'log-info';
+      span.textContent = line;
+      box.appendChild(span);
+    });
+    c.innerHTML = `<div style="margin-bottom:12px;color:var(--text2);font-size:13px">Последние ${r.lines.length} строк лога</div>`;
+    c.appendChild(box);
+    box.scrollTop = box.scrollHeight;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+init();
+</script>
+</body>
+</html>

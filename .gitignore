@@ -90,3 +90,6 @@ docker/
 !/config/.gitkeep
 
 Session.vim
+
+# Claude Code local settings
+.claude/

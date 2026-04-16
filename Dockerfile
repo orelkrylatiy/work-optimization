@@ -45,16 +45,14 @@ COPY crontab /app/crontab
 COPY startup.sh /app/startup.sh
 
 # Настройка крона
-RUN touch /var/log/cron.log && chown docker:docker /var/log/cron.log && \
-  dos2unix /app/crontab && \
+RUN dos2unix /app/crontab && \
   chmod +x /app/startup.sh && \
   chmod 0644 /app/crontab && \
   crontab -u docker /app/crontab
 
-# Запускаем крон и читаем лог
+# Запускаем крон в foreground режиме с логированием в stdout
 # cron не видит переменные окружения, переданные главному процессу, точнее
 # он начинает новую сессию, где тот же $CONFIG_DIR пуст
 CMD printenv | grep -E 'CONFIG_DIR|HH_PROFILE_ID' >> /etc/environment && \
   chown -R docker:docker /app/config && \
-  cron && \
-  tail -f /var/log/cron.log
+  cron -f 2>&1

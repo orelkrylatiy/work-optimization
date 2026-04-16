@@ -1,12 +1,54 @@
+# Version control
 .venv
 .vscode
 .git
 .github
+.gitignore
+.gitattributes
+
+# IDE & Editor
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Python
 __pycache__
-*.pyc
-tests
-docs
-.pytest_cache
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
 *.egg-info
 dist
 build
+.pytest_cache
+*.pyc
+.coverage
+htmlcov/
+.tox/
+.eggs/
+
+# Project specific
+.claude/
+.env
+.env.local
+.env.*.local
+*.bat
+*.log
+
+# Developer/Testing
+docs
+tests
+
+# OS
+Thumbs.db
+
+# Development
+node_modules/
+.npm

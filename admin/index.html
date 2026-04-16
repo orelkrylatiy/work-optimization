@@ -95,6 +95,9 @@
   .btn-danger:hover { background: rgba(239,68,68,.3); }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
 
+  /* Cancel button in banner */
+  #operations-banner .btn:hover { background: rgba(255,255,255,.3); }
+
   /* Pagination */
   .pagination { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
   .pagination span { color: var(--text2); font-size: 13px; }
@@ -133,6 +136,8 @@
   /* Loading spinner */
   .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
 
   /* Toast */
   #toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
@@ -211,6 +216,13 @@
 
   <!-- Main -->
   <div class="main">
+    <div id="operations-banner" style="background:var(--accent);color:white;padding:12px 24px;display:none;flex-direction:column;gap:8px;font-weight:600;animation:pulse 1.5s infinite">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:white;width:14px;height:14px"></span>
+        <strong>Запущенные операции:</strong>
+      </div>
+      <div id="operations-list" style="display:flex;flex-direction:column;gap:6px;padding-left:22px"></div>
+    </div>
     <div class="topbar">
       <h1 id="page-title">Дашборд</h1>
       <div id="topbar-actions"></div>
@@ -227,21 +239,67 @@
 const API = '';
 let currentProfile = 'default';
 let currentPage = 'dashboard';
+let CONSTANTS = null;
+
+// Загружаем константы API
+async function loadConstants() {
+  try {
+    const resp = await fetch('/api/constants');
+    CONSTANTS = await resp.json();
+  } catch (e) {
+    console.error('Failed to load constants:', e);
+    // Используем значения по умолчанию
+    CONSTANTS = {
+      endpoints: {
+        status: '/api/status',
+        profiles: '/api/profiles',
+        stats: '/api/stats',
+        negotiations: '/api/negotiations',
+        vacancies: '/api/vacancies',
+        skipped: '/api/skipped',
+        employers: '/api/employers',
+        resumes: '/api/resumes',
+        config: '/api/config',
+        logs: '/api/logs',
+        generate_letter: '/api/generate-letter',
+        run: '/api/run',
+        cancel: '/api/cancel',
+        operations: '/api/operations',
+        operation_status: '/api/operation-status',
+      },
+      operations: {
+        update_resumes: 'update-resumes',
+        apply_vacancies: 'apply-vacancies',
+      },
+      defaults: { profile: 'default' }
+    };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 async function init() {
+  await loadConstants();
+
+  // Устанавливаем дефолтное значение задержки
+  if (CONSTANTS.defaults && CONSTANTS.defaults.response_delay) {
+    // Будет установлено при загрузке страницы run()
+  }
+
   await loadProfiles();
   // Проверяем готовность системы
   try {
-    const s = await api('/api/status');
+    const s = await api(CONSTANTS.endpoints.status);
     if (!s.ready) {
       showSetupPage(s);
       return;
     }
   } catch(e) {}
-  goPage('dashboard');
+
+  // Восстанавливаем последнюю посещённую страницу
+  const lastPage = localStorage.getItem('lastPage') || 'dashboard';
+  goPage(lastPage);
 }
 
 function showSetupPage(status) {
@@ -296,18 +354,21 @@ async function checkReady() {
 
 async function loadProfiles() {
   try {
-    const r = await api('/api/profiles');
+    const r = await api(CONSTANTS.endpoints.profiles);
     const sel = document.getElementById('profile-select');
     sel.innerHTML = '';
     if (r.profiles.length === 0) {
-      sel.innerHTML = '<option value="default">default</option>';
+      sel.innerHTML = `<option value="${CONSTANTS.defaults.profile}">${CONSTANTS.defaults.profile}</option>`;
     } else {
       r.profiles.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p; opt.textContent = p;
         sel.appendChild(opt);
       });
-      currentProfile = r.profiles[0];
+
+      // Восстанавливаем последний выбранный профиль
+      const lastProfile = localStorage.getItem('lastProfile') || r.profiles[0];
+      currentProfile = lastProfile;
       sel.value = currentProfile;
     }
   } catch(e) {}
@@ -315,6 +376,7 @@ async function loadProfiles() {
 
 function onProfileChange() {
   currentProfile = document.getElementById('profile-select').value;
+  localStorage.setItem('lastProfile', currentProfile);  // Сохраняем профиль
   goPage(currentPage);
 }
 
@@ -335,6 +397,7 @@ const PAGE_TITLES = {
 
 function goPage(page) {
   currentPage = page;
+  localStorage.setItem('lastPage', page);  // Сохраняем в localStorage
   document.getElementById('page-title').textContent = PAGE_TITLES[page] || page;
   document.getElementById('topbar-actions').innerHTML = '';
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -404,8 +467,10 @@ function timeAgo(dt) {
 async function dashboard() {
   const c = document.getElementById('content');
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+  document.getElementById('topbar-actions').innerHTML =
+    `<button class="btn btn-secondary" onclick="dashboard()">🔄 Обновить</button>`;
   try {
-    const d = await api('/api/stats');
+    const d = await api(CONSTANTS.endpoints.stats);
     const t = d.totals;
 
     const stateColors = { invitation: 'green', discard: 'red', rejection: 'red', response: 'yellow', phone_interview: 'blue' };
@@ -550,7 +615,7 @@ async function negotiations(state_filter) {
 
   try {
     const stateQ = curState ? `&state=${encodeURIComponent(curState)}` : '';
-    const r = await api(`/api/negotiations?limit=50&offset=${negPage * 50}${stateQ}`);
+    const r = await api(`${CONSTANTS.endpoints.negotiations}?limit=50&offset=${negPage * 50}${stateQ}`);
     let rows = '';
     if (r.items.length) {
       r.items.forEach(n => {
@@ -610,7 +675,7 @@ async function vacancies() {
 
   try {
     const sq = vacSearch ? `&search=${encodeURIComponent(vacSearch)}` : '';
-    const r = await api(`/api/vacancies?limit=50&offset=${vacPage*50}${sq}`);
+    const r = await api(`${CONSTANTS.endpoints.vacancies}?limit=50&offset=${vacPage*50}${sq}`);
     let rows = '';
     if (r.items.length) {
       r.items.forEach(v => {
@@ -655,7 +720,7 @@ async function skipped() {
   const c = document.getElementById('content');
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
   try {
-    const r = await api(`/api/skipped?limit=50&offset=${skipPage*50}`);
+    const r = await api(`${CONSTANTS.endpoints.skipped}?limit=50&offset=${skipPage*50}`);
     let rows = '';
     if (r.items.length) {
       r.items.forEach(s => {
@@ -700,7 +765,7 @@ async function employers() {
     <div style="color:var(--text2)">Загрузка...</div>`;
   try {
     const sq = empSearch ? `&search=${encodeURIComponent(empSearch)}` : '';
-    const r = await api(`/api/employers?limit=50&offset=${empPage*50}${sq}`);
+    const r = await api(`${CONSTANTS.endpoints.employers}?limit=50&offset=${empPage*50}${sq}`);
     let rows = '';
     if (r.items.length) {
       r.items.forEach(e => {
@@ -743,7 +808,7 @@ async function letter() {
   // Load resumes for dropdown
   let resumeOpts = '<option value="">— не указано —</option>';
   try {
-    const r = await api('/api/resumes');
+    const r = await api(CONSTANTS.endpoints.resumes);
     r.items.forEach(res => {
       resumeOpts += `<option value="${res.title}">${res.title}</option>`;
     });
@@ -791,7 +856,7 @@ async function generateLetter() {
   result.style.display = 'none';
 
   try {
-    const r = await fetch('/api/generate-letter?profile=' + encodeURIComponent(currentProfile), {
+    const r = await fetch(`${CONSTANTS.endpoints.generate_letter}?profile=` + encodeURIComponent(currentProfile), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -828,31 +893,105 @@ async function generateLetter() {
 }
 
 // RUN OPERATIONS
-function run() {
+async function run() {
   const c = document.getElementById('content');
+
+  // Получаем список текущих операций
+  let activeOps = [];
+  try {
+    const opsResp = await fetch(`${CONSTANTS.endpoints.operations}?profile=${encodeURIComponent(currentProfile)}`);
+    const opsData = await opsResp.json();
+    activeOps = opsData.operations.filter(op => op.running);
+  } catch(e) {
+    console.error('Ошибка получения операций:', e);
+  }
+
+  // Определяем какие кнопки должны быть disabled
+  const updateResumeRunning = activeOps.some(op => op.op_id.includes('update') || runningOps[op.op_id]?.name.includes('Обновить'));
+  const applyVacanciesRunning = activeOps.some(op => op.op_id.includes('apply') || runningOps[op.op_id]?.name.includes('Автоотклики'));
+
+  const updateResumeDisabled = updateResumeRunning ? 'disabled' : '';
+  const applyVacanciesDisabled = applyVacanciesRunning ? 'disabled' : '';
+
   c.innerHTML = `
     <div class="run-grid">
       <div class="run-card">
         <h3>📤 Обновить резюме</h3>
         <p>Поднять резюме в поиске (publish). Выполняется мгновенно.</p>
         <div class="run-actions">
-          <button class="btn btn-success" onclick="runOp('update-resumes', this, false)">▶ Запустить</button>
+          <button class="btn btn-success" onclick="runOp('${CONSTANTS.operations.update_resumes}', this, false)" ${updateResumeDisabled} title="${updateResumeRunning ? 'Операция уже выполняется' : ''}">
+            ${updateResumeRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
+          </button>
         </div>
-        <div class="run-output" id="out-update-resumes"></div>
+        <div class="run-output" id="out-${CONSTANTS.operations.update_resumes}"></div>
       </div>
       <div class="run-card">
         <h3>🎯 Автоотклики</h3>
         <p>Автоматически откликнуться на вакансии по настроенным параметрам.</p>
-        <div class="run-actions">
-          <button class="btn btn-secondary" onclick="runOp('apply-vacancies', this, true)">🧪 Dry-run</button>
-          <button class="btn btn-danger" onclick="if(confirm('Запустить реальные отклики?'))runOp('apply-vacancies', this, false)">▶ Запустить</button>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:6px">Задержка между откликами (сек)</label>
+          <input id="response-delay" type="text" placeholder="1-3" value="" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:7px 12px;font-size:13px;outline:none" />
+          <div style="font-size:11px;color:var(--text2);margin-top:4px">Формат: минимум-максимум (например, 10-20 для 10-20 сек)</div>
         </div>
-        <div class="run-output" id="out-apply-vacancies"></div>
+        <div class="run-actions">
+          <button class="btn btn-secondary" onclick="runOp('${CONSTANTS.operations.apply_vacancies}', this, true)" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
+            ${applyVacanciesRunning ? '<span class="spinner"></span> Выполняется...' : '🧪 Dry-run'}
+          </button>
+          <button class="btn btn-danger" onclick="if(confirm('Запустить реальные отклики?'))runOp('${CONSTANTS.operations.apply_vacancies}', this, false)" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
+            ${applyVacanciesRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
+          </button>
+        </div>
+        <div class="run-output" id="out-${CONSTANTS.operations.apply_vacancies}"></div>
       </div>
     </div>
     <div style="margin-top:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:13px">
       ⚠️ Операции запускаются в фоне и могут занять несколько минут. Не закрывайте страницу до завершения.
+      ${activeOps.length > 0 ? `<br/>🔄 Активных операций: ${activeOps.length}` : ''}
     </div>`;
+
+  // Устанавливаем дефолтное значение задержки
+  setTimeout(() => {
+    const delayInput = document.getElementById('response-delay');
+    if (delayInput && CONSTANTS.defaults && CONSTANTS.defaults.response_delay) {
+      delayInput.value = CONSTANTS.defaults.response_delay;
+    }
+  }, 0);
+}
+
+// Отслеживание запущенных операций
+const runningOps = {};
+
+async function updateOperationsList() {
+  const list = document.getElementById('operations-list');
+  const banner = document.getElementById('operations-banner');
+
+  const runningCount = Object.values(runningOps).filter(op => !op.completed).length;
+
+  if (runningCount === 0) {
+    banner.style.display = 'none';
+    document.title = 'HH Admin Panel';
+    return;
+  }
+
+  banner.style.display = 'flex';
+  document.title = `🔄 ${runningCount} операция${runningCount > 1 ? 'й' : 'я'}... - HH Admin Panel`;
+
+  let html = '';
+  for (const [opId, opData] of Object.entries(runningOps)) {
+    if (!opData.completed) {
+      html += `
+        <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;font-size:13px">
+          <span style="display:flex;align-items:center;gap:6px;flex:1">
+            <span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:white;width:12px;height:12px"></span>
+            <span>${opData.name}</span>
+            <span style="opacity:0.7">(${opId})</span>
+          </span>
+          <button class="btn" style="background:rgba(255,255,255,.2);color:white;border:1px solid rgba(255,255,255,.3);padding:4px 10px;font-size:11px;margin:0" onclick="cancelAndRemoveOp('${opId}')">✕</button>
+        </div>
+      `;
+    }
+  }
+  list.innerHTML = html;
 }
 
 async function runOp(op, btn, dryRun) {
@@ -863,25 +1002,115 @@ async function runOp(op, btn, dryRun) {
   outEl.style.display = 'block';
   outEl.textContent = 'Запуск...';
 
-  const url = `/api/run/${op}?profile=${encodeURIComponent(currentProfile)}`;
+  let opId = null;
+  const opName = op === CONSTANTS.operations.update_resumes ? '📤 Обновить резюме' : '🎯 Автоотклики';
+  const url = `${CONSTANTS.endpoints.run}/${op}?profile=${encodeURIComponent(currentProfile)}`;
+
   try {
+    // Подготавливаем параметры
+    const body = {
+      profile: currentProfile,
+      dry_run: dryRun
+    };
+
+    // Если это apply-vacancies, добавляем параметр задержки
+    if (op === CONSTANTS.operations.apply_vacancies) {
+      const delayInput = document.getElementById('response-delay');
+      if (delayInput && delayInput.value) {
+        body.response_delay = delayInput.value;
+      }
+    }
+
+    // Запускаем операцию
     const r = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({profile: currentProfile, dry_run: dryRun})
+      body: JSON.stringify(body)
     });
     const data = await r.json();
+    opId = data.op_id;
+
     if (!r.ok) throw new Error(data.detail);
-    const out = [data.stdout, data.stderr].filter(Boolean).join('\n---stderr---\n');
-    outEl.textContent = out || '(нет вывода)';
-    if (data.returncode === 0) toast(`${op} завершён успешно`);
-    else toast(`${op} завершён с кодом ${data.returncode}`, 'error');
+
+    // Добавляем в список
+    runningOps[opId] = {
+      name: opName,
+      completed: false,
+      result: null
+    };
+    await updateOperationsList();
+
+    outEl.textContent = `Операция ${opId} выполняется...`;
+
+    // Polling: проверяем статус каждые 500ms
+    let completed = false;
+    while (!completed) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      try {
+        const statusUrl = `${CONSTANTS.endpoints.operation_status}/${opId}?profile=${encodeURIComponent(currentProfile)}`;
+        const statusResp = await fetch(statusUrl);
+        const statusData = await statusResp.json();
+
+        if (!statusData.running) {
+          // Операция завершена
+          completed = true;
+          runningOps[opId].completed = true;
+          runningOps[opId].result = statusData;
+
+          const out = [statusData.stdout, statusData.stderr].filter(Boolean).join('\n---stderr---\n');
+          outEl.textContent = out || '(нет вывода)';
+
+          if (statusData.returncode === 0) {
+            toast(`${opName} завершён успешно`);
+          } else {
+            toast(`${opName} завершён с кодом ${statusData.returncode}`, 'error');
+          }
+
+          // Удаляем из списка через 5 секунд
+          setTimeout(() => {
+            delete runningOps[opId];
+            updateOperationsList();
+
+            // Обновляем дашборд если мы на нём
+            if (currentPage === 'dashboard') {
+              dashboard();
+            }
+          }, 5000);
+
+          break;
+        }
+      } catch(e) {
+        console.error('Ошибка при проверке статуса:', e);
+      }
+    }
+
+    await updateOperationsList();
   } catch(e) {
     outEl.textContent = 'Ошибка: ' + e.message;
     toast(e.message, 'error');
+    if (opId) {
+      delete runningOps[opId];
+      await updateOperationsList();
+    }
   } finally {
     btn.disabled = false;
     btn.innerHTML = orig;
+  }
+}
+
+async function cancelAndRemoveOp(opId) {
+  if (!confirm('Отменить операцию?')) return;
+
+  try {
+    const r = await fetch(`${CONSTANTS.endpoints.cancel}/${opId}`, {method: 'POST'});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail);
+    toast('Операция отменена');
+    delete runningOps[opId];
+    await updateOperationsList();
+  } catch(e) {
+    toast('Ошибка отмены: ' + e.message, 'error');
   }
 }
 
@@ -890,7 +1119,7 @@ async function config() {
   const c = document.getElementById('content');
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
   try {
-    const data = await api('/api/config');
+    const data = await api(CONSTANTS.endpoints.config);
     let rows = '';
     const renderVal = (v) => {
       if (v === '***') return `<span class="config-val secret">*** скрыто ***</span>`;
@@ -956,7 +1185,7 @@ async function saveConfig() {
     }
   };
   try {
-    const r = await fetch('/api/config?profile=' + encodeURIComponent(currentProfile), {
+    const r = await fetch(`${CONSTANTS.endpoints.config}?profile=` + encodeURIComponent(currentProfile), {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({data: payload})
@@ -975,7 +1204,7 @@ async function logs() {
     `<button class="btn btn-secondary" onclick="logs()">🔄 Обновить</button>`;
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
   try {
-    const r = await api('/api/logs?lines=300');
+    const r = await api(`${CONSTANTS.endpoints.logs}?lines=300`);
     const box = document.createElement('div');
     box.className = 'log-box';
     r.lines.forEach(line => {

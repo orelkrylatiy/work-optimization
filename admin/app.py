@@ -14,17 +14,35 @@ import platform
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from hh_applicant_tool import constants
+
 app = FastAPI(title="HH Admin Panel", version="1.0.0")
+
+# Отслеживание запущенных операций
+running_operations = {}
+operations_lock = threading.Lock()
+
+# Устанавливаем UTF-8 для всех JSON ответов
+app.default_response_class = JSONResponse
+
+# Middleware для явного указания UTF-8 кодировки
+@app.middleware("http")
+async def add_utf8_header(request, call_next):
+    response = await call_next(request)
+    if "content-type" in response.headers:
+        response.headers["content-type"] = response.headers["content-type"].replace("charset=", "").split(";")[0] + "; charset=utf-8"
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -144,6 +162,39 @@ def get_status():
         status["has_db"] = db.exists()
         status["ready"] = cfg.exists() and db.exists()
     return status
+
+
+@app.get("/api/constants")
+def get_constants():
+    """Возвращает константы API для фронтенда."""
+    return {
+        "API_PREFIX": constants.ADMIN_API_PREFIX,
+        "endpoints": {
+            "status": constants.ADMIN_API_STATUS,
+            "profiles": constants.ADMIN_API_PROFILES,
+            "stats": constants.ADMIN_API_STATS,
+            "negotiations": constants.ADMIN_API_NEGOTIATIONS,
+            "vacancies": constants.ADMIN_API_VACANCIES,
+            "skipped": constants.ADMIN_API_SKIPPED,
+            "employers": constants.ADMIN_API_EMPLOYERS,
+            "resumes": constants.ADMIN_API_RESUMES,
+            "config": constants.ADMIN_API_CONFIG,
+            "logs": constants.ADMIN_API_LOGS,
+            "generate_letter": constants.ADMIN_API_GENERATE_LETTER,
+            "run": constants.ADMIN_API_RUN,
+            "cancel": constants.ADMIN_API_CANCEL,
+            "operations": constants.ADMIN_API_OPERATIONS,
+            "operation_status": constants.ADMIN_API_OPERATION_STATUS,
+        },
+        "operations": {
+            "update_resumes": constants.ADMIN_OP_UPDATE_RESUMES,
+            "apply_vacancies": constants.ADMIN_OP_APPLY_VACANCIES,
+        },
+        "defaults": {
+            "profile": constants.ADMIN_DEFAULT_PROFILE,
+            "response_delay": f"{constants.RESPONSE_DELAY_MIN}-{constants.RESPONSE_DELAY_MAX}",
+        }
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -365,7 +416,7 @@ def list_resumes(profile: str = Query("default")):
 # Routes: config
 # ---------------------------------------------------------------------------
 
-MASKED_KEYS = {"access_token", "refresh_token", "password", "api_key"}
+MASKED_KEYS = constants.MASKED_CONFIG_KEYS
 
 
 def _mask_config(obj: Any, depth: int = 0) -> Any:
@@ -457,8 +508,8 @@ def generate_letter(body: LetterRequest):
     if not api_key:
         raise HTTPException(400, "OpenAI API key не настроен в config.json")
 
-    base_url = openai_cfg.get("base_url", "https://api.openai.com/v1")
-    model = openai_cfg.get("model", "gpt-4o-mini")
+    base_url = openai_cfg.get("base_url", constants.OPENAI_DEFAULT_BASE_URL)
+    model = openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL)
 
     try:
         import urllib.request
@@ -517,6 +568,7 @@ class RunRequest(BaseModel):
     profile: str = "default"
     dry_run: bool = False
     extra_args: list[str] = []
+    response_delay: str = f"{constants.RESPONSE_DELAY_MIN}-{constants.RESPONSE_DELAY_MAX}"
 
 
 @app.post("/api/run/update-resumes")
@@ -529,35 +581,179 @@ def run_apply_vacancies(body: RunRequest):
     args = []
     if body.dry_run:
         args.append("--dry-run")
+    if body.response_delay and body.response_delay != f"{constants.RESPONSE_DELAY_MIN}-{constants.RESPONSE_DELAY_MAX}":
+        args.extend(["--response-delay", body.response_delay])
     return _run_operation("apply-vacancies", body, extra=args)
 
 
 def _run_operation(op: str, body: RunRequest, extra: list[str] = []) -> dict:
-    cmd = [
-        sys.executable, "-m", "hh_applicant_tool",
-        "--profile", body.profile,
-        op,
-    ] + extra + body.extra_args
+    import uuid
 
     project_root = Path(__file__).parent.parent
 
+    # Генерируем уникальный ID для операции
+    op_id = str(uuid.uuid4())[:8]
+
+    # Используем текущий Python interpreter с poetry
+    cmd = [
+        sys.executable, "-m", "poetry", "run", "python", "-m", "hh_applicant_tool",
+        op,
+    ] + extra + body.extra_args
+
+    # Функция для выполнения в потоке
+    def execute_operation():
+        try:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            print(f"DEBUG: Starting operation {op_id}: {' '.join(cmd)}")
+
+            # Используем Popen чтобы можно было отменить процесс
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(project_root),
+                env=env,
+            )
+
+            # Сохраняем процесс для возможности отмены
+            with operations_lock:
+                running_operations[op_id] = process
+            print(f"DEBUG: Process {op_id} started with PID {process.pid}")
+
+            try:
+                # Ждём завершения с таймаутом
+                stdout, stderr = process.communicate(timeout=constants.ADMIN_OPERATION_TIMEOUT)
+                returncode = process.returncode
+                print(f"DEBUG: Process {op_id} completed with code {returncode}")
+            except subprocess.TimeoutExpired:
+                print(f"DEBUG: Process {op_id} timeout - terminating")
+                process.terminate()
+                try:
+                    stdout, stderr = process.communicate(timeout=3)
+                    returncode = process.returncode
+                except subprocess.TimeoutExpired:
+                    print(f"DEBUG: Force killing process {op_id}")
+                    process.kill()
+                    stdout, stderr = process.communicate()
+                    returncode = process.returncode
+
+            # Сохраняем результат
+            with operations_lock:
+                if op_id in running_operations:
+                    running_operations[op_id] = {
+                        "completed": True,
+                        "returncode": int(returncode) if returncode is not None else 0,
+                        "stdout": stdout[-constants.ADMIN_LOG_OUTPUT_LIMIT:] if stdout else "",
+                        "stderr": stderr[-constants.ADMIN_LOG_ERROR_LIMIT:] if stderr else "",
+                    }
+
+        except Exception as e:
+            print(f"DEBUG: Exception in operation {op_id}: {type(e).__name__}: {e}")
+            import traceback
+            print(traceback.format_exc())
+            with operations_lock:
+                if op_id in running_operations:
+                    running_operations[op_id] = {
+                        "completed": True,
+                        "error": str(e),
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": str(e),
+                    }
+
+    # Запускаем операцию в отдельном потоке
+    thread = threading.Thread(target=execute_operation, daemon=True)
+    thread.start()
+
+    # Сразу возвращаем ID операции
+    return {
+        "op_id": op_id,
+        "returncode": None,  # Ещё выполняется
+        "stdout": "Операция запущена в фоне...",
+        "stderr": "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes: cancel operations
+# ---------------------------------------------------------------------------
+
+@app.post("/api/cancel/{op_id}")
+def cancel_operation(op_id: str):
+    """Отменить выполняющуюся операцию."""
+    process = running_operations.get(op_id)
+    if not process:
+        raise HTTPException(404, f"Операция {op_id} не найдена или уже завершена")
+
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(project_root),
-        )
-        return {
-            "returncode": result.returncode,
-            "stdout": result.stdout[-5000:],
-            "stderr": result.stderr[-2000:],
-        }
-    except subprocess.TimeoutExpired:
-        raise HTTPException(408, "Операция заняла слишком много времени (>5 мин)")
+        print(f"DEBUG: Terminating process {op_id}")
+        process.terminate()
+        # Даём 3 секунды на graceful shutdown
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            print(f"DEBUG: Force killing process {op_id}")
+            process.kill()
+            process.wait()
+
+        running_operations.pop(op_id, None)
+        return {"ok": True, "message": f"Операция {op_id} отменена"}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, f"Ошибка при отмене: {e}")
+
+
+@app.get("/api/operations")
+def list_operations():
+    """Список запущенных операций."""
+    with operations_lock:
+        ops = []
+        for op_id, proc_or_result in running_operations.items():
+            if isinstance(proc_or_result, dict) and proc_or_result.get("completed"):
+                # Завершённая операция
+                ops.append({
+                    "op_id": op_id,
+                    "running": False,
+                    "returncode": proc_or_result.get("returncode"),
+                })
+            else:
+                # Выполняющаяся операция (процесс)
+                ops.append({
+                    "op_id": op_id,
+                    "running": proc_or_result.poll() is None,
+                    "pid": proc_or_result.pid,
+                })
+    return {"operations": ops}
+
+
+@app.get("/api/operation-status/{op_id}")
+def get_operation_status(op_id: str):
+    """Получить статус конкретной операции."""
+    with operations_lock:
+        item = running_operations.get(op_id)
+
+    if not item:
+        raise HTTPException(404, f"Операция {op_id} не найдена")
+
+    if isinstance(item, dict) and item.get("completed"):
+        # Завершённая операция
+        return {
+            "op_id": op_id,
+            "running": False,
+            "returncode": item.get("returncode"),
+            "stdout": item.get("stdout", ""),
+            "stderr": item.get("stderr", ""),
+        }
+    else:
+        # Выполняющаяся операция
+        return {
+            "op_id": op_id,
+            "running": True,
+            "pid": item.pid if hasattr(item, 'pid') else None,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -566,4 +762,4 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] = []) -> dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("admin.app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("admin.app:app", host=constants.ADMIN_LOCALHOST, port=constants.ADMIN_DEFAULT_PORT, reload=True)

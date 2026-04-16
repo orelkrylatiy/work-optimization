@@ -139,7 +139,23 @@
 
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
 
-  /* Toast */
+  /* Modal */
+  .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+  .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; max-width: 500px; width: 90%; box-shadow: var(--shadow); }
+  .modal h2 { font-size: 18px; margin-bottom: 16px; color: var(--text); }
+  .modal-section { margin-bottom: 16px; padding: 12px; background: var(--bg3); border-radius: 6px; border-left: 3px solid var(--accent); }
+  .modal-section h3 { font-size: 13px; font-weight: 600; color: var(--accent2); margin-bottom: 8px; text-transform: uppercase; }
+  .modal-section p { font-size: 13px; color: var(--text2); line-height: 1.6; margin: 0; }
+  .modal-section ul { font-size: 12px; color: var(--text2); margin: 4px 0 0 16px; padding: 0; }
+  .modal-section li { margin: 4px 0; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+  .modal-actions button { padding: 8px 16px; border: none; border-radius: var(--radius); cursor: pointer; font-weight: 600; transition: all .15s; }
+  .modal-actions .btn-cancel { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+  .modal-actions .btn-cancel:hover { background: var(--border); }
+  .modal-actions .btn-confirm { background: var(--accent); color: white; }
+  .modal-actions .btn-confirm:hover { background: var(--accent2); }
+  .modal-actions .btn-dry { background: rgba(245,158,11,.15); color: var(--yellow); border: 1px solid rgba(245,158,11,.3); }
+  .modal-actions .btn-dry:hover { background: rgba(245,158,11,.25); }
   #toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
   .toast { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; box-shadow: var(--shadow); animation: slide-in .2s; max-width: 300px; }
   .toast.success { border-left: 3px solid var(--green); }
@@ -234,6 +250,49 @@
 </div>
 
 <div id="toast-container"></div>
+
+<!-- Modal для подтверждения запуска откликов -->
+<div id="apply-modal" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h2>🎯 Подтверждение запуска откликов</h2>
+
+    <div class="modal-section">
+      <h3 id="modal-mode-title">Режим Dry-Run (тестирование)</h3>
+      <p id="modal-mode-desc">Вакансии загружаются и проверяются, но отклики НЕ отправляются на HH.ru</p>
+      <ul>
+        <li>✅ Проверка всех фильтров</li>
+        <li>✅ AI фильтрация (если включена)</li>
+        <li>✅ Вывод логов и статистики</li>
+        <li>❌ Отклики не отправляются</li>
+        <li>❌ Профиль не изменяется</li>
+      </ul>
+    </div>
+
+    <div class="modal-section" style="display:none" id="modal-live-section">
+      <h3>Режим Live (реальные отклики)</h3>
+      <p><strong style="color:var(--red)">⚠️ Внимание!</strong> Отклики будут реально отправлены на HH.ru</p>
+      <ul>
+        <li>✅ Отклики отправляются на все подходящие вакансии</li>
+        <li>✅ Профиль и статус обновляются</li>
+        <li>✅ Применяются задержки между откликами</li>
+        <li>❌ Операцию нельзя отменить после начала</li>
+      </ul>
+    </div>
+
+    <div style="margin-top:14px;padding:12px;background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.2);border-radius:var(--radius)">
+      <div style="font-size:12px;color:var(--text2)">
+        <strong>Задержка между откликами:</strong>
+        <span id="modal-delay" style="color:var(--accent2);font-weight:600">1-3 сек</span>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeApplyModal()">✕ Отмена</button>
+      <button class="btn-dry" id="modal-btn-dry" onclick="confirmApplyModale(true)" style="display:none">🧪 Dry-Run</button>
+      <button class="btn-confirm" id="modal-btn-live" onclick="confirmApplyModale(false)">▶ Запустить</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const API = '';
@@ -441,7 +500,96 @@ function stateHtml(state) {
   return `<span class="state state-${cls}">${label}</span>`;
 }
 
-function salary(row) {
+// ---------------------------------------------------------------------------
+// Modal functions for apply-vacancies
+// ---------------------------------------------------------------------------
+
+let pendingApplyMode = null;
+
+function showApplyModal() {
+  const delayInput = document.getElementById('response-delay');
+  const delay = (delayInput && delayInput.value) || '1-3';
+
+  // Определяем какая кнопка была нажата
+  const clickedButton = event.target;
+  const isDryRun = clickedButton.innerHTML.includes('🧪');
+
+  document.getElementById('modal-delay').textContent = delay + ' сек';
+
+  // Обновляем текст модального окна в зависимости от режима
+  const modeTitle = document.getElementById('modal-mode-title');
+  const modeDesc = document.getElementById('modal-mode-desc');
+  const liveSection = document.getElementById('modal-live-section');
+  const dryBtn = document.getElementById('modal-btn-dry');
+  const liveBtn = document.getElementById('modal-btn-live');
+
+  if (isDryRun) {
+    // Режим Dry-Run
+    modeTitle.textContent = '🧪 Режим Dry-Run (тестирование)';
+    modeDesc.textContent = 'Вакансии загружаются и проверяются, но отклики НЕ отправляются на HH.ru';
+    liveSection.style.display = 'none';
+    dryBtn.style.display = 'none';
+    liveBtn.textContent = '✅ Начать тестирование';
+    liveBtn.className = 'btn-confirm';
+    pendingApplyMode = true;
+  } else {
+    // Режим Live
+    modeTitle.textContent = '⚠️ Режим Live (реальные отклики)';
+    modeDesc.textContent = 'Отклики будут реально отправлены на HH.ru. Операцию нельзя отменить после начала!';
+    liveSection.style.display = 'block';
+    dryBtn.style.display = 'block';
+    liveBtn.textContent = '▶ Да, начать откликаться!';
+    liveBtn.className = 'btn-confirm';
+    pendingApplyMode = false;
+  }
+
+  document.getElementById('apply-modal').style.display = 'flex';
+}
+
+function closeApplyModal() {
+  document.getElementById('apply-modal').style.display = 'none';
+  pendingApplyMode = null;
+}
+
+function confirmApplyModale(isDryRun) {
+  document.getElementById('apply-modal').style.display = 'none';
+
+  // Находим кнопку для запуска
+  const buttons = document.querySelectorAll('.run-card:nth-child(2) .run-actions button');
+
+  if (pendingApplyMode === true) {
+    // Был выбран mode Dry-Run - запускаем dry-run
+    if (buttons.length > 0) {
+      runOp(CONSTANTS.operations.apply_vacancies, buttons[0], true);
+    }
+  } else if (pendingApplyMode === false && isDryRun === false) {
+    // Был выбран Live и пользователь подтвердил - запускаем реальные отклики
+    if (buttons.length > 1) {
+      runOp(CONSTANTS.operations.apply_vacancies, buttons[1], false);
+    }
+  } else if (pendingApplyMode === false && isDryRun === true) {
+    // Пользователь передумал и выбрал Dry-Run вместо Live
+    if (buttons.length > 0) {
+      runOp(CONSTANTS.operations.apply_vacancies, buttons[0], true);
+    }
+  }
+
+  pendingApplyMode = null;
+}
+
+// Закрывать модальное окно при клике на оверлей
+document.addEventListener('click', function(e) {
+  const modal = document.getElementById('apply-modal');
+  if (e.target === modal) {
+    closeApplyModal();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Pages
+// ---------------------------------------------------------------------------
+
+// DASHBOARD
   if (!row.salary_from && !row.salary_to) return '<span style="color:var(--text2)">—</span>';
   const cur = row.currency || '';
   const from = row.salary_from ? `от ${row.salary_from.toLocaleString()}` : '';
@@ -459,11 +607,7 @@ function timeAgo(dt) {
   return Math.floor(diff/86400) + ' д. назад';
 }
 
-// ---------------------------------------------------------------------------
-// Pages
-// ---------------------------------------------------------------------------
-
-// DASHBOARD
+function stateHtml(state) {
 async function dashboard() {
   const c = document.getElementById('content');
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
@@ -934,10 +1078,10 @@ async function run() {
           <div style="font-size:11px;color:var(--text2);margin-top:4px">Формат: минимум-максимум (например, 10-20 для 10-20 сек)</div>
         </div>
         <div class="run-actions">
-          <button class="btn btn-secondary" onclick="runOp('${CONSTANTS.operations.apply_vacancies}', this, true)" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
+          <button class="btn btn-secondary" onclick="showApplyModal()" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
             ${applyVacanciesRunning ? '<span class="spinner"></span> Выполняется...' : '🧪 Dry-run'}
           </button>
-          <button class="btn btn-danger" onclick="if(confirm('Запустить реальные отклики?'))runOp('${CONSTANTS.operations.apply_vacancies}', this, false)" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
+          <button class="btn btn-danger" onclick="showApplyModal()" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
             ${applyVacanciesRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
           </button>
         </div>
@@ -1061,10 +1205,13 @@ async function runOp(op, btn, dryRun) {
           const out = [statusData.stdout, statusData.stderr].filter(Boolean).join('\n---stderr---\n');
           outEl.textContent = out || '(нет вывода)';
 
-          if (statusData.returncode === 0) {
-            toast(`${opName} завершён успешно`);
+          // Гарантируем, что returncode это число
+          const returnCode = typeof statusData.returncode === 'number' ? statusData.returncode : (statusData.returncode || 1);
+
+          if (returnCode === 0) {
+            toast(`${opName} завершён успешно ✅`);
           } else {
-            toast(`${opName} завершён с кодом ${statusData.returncode}`, 'error');
+            toast(`${opName} завершён с кодом ${returnCode} ❌`, 'error');
           }
 
           // Удаляем из списка через 5 секунд

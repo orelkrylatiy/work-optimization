@@ -30,26 +30,45 @@ class Config(dict):
     def load(self) -> None:
         if self._config_path.exists():
             with self._lock:
-                with self._config_path.open(
-                    "r", encoding="utf-8", errors="replace"
-                ) as f:
-                    self.update(json.load(f))
+                try:
+                    with self._config_path.open(
+                        "r", encoding="utf-8", errors="replace"
+                    ) as f:
+                        self.update(json.load(f))
+                except json.JSONDecodeError:
+                    if not self._is_recoverable_load_error():
+                        raise
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         self.update(*args, **kwargs)
         self._config_path.parent.mkdir(exist_ok=True, parents=True)
         with self._lock:
-            with self._config_path.open(
-                "w+", encoding="utf-8", errors="replace"
-            ) as fp:
-                json.dump(
-                    self,
-                    fp,
-                    indent=2,
-                    sort_keys=True,
-                )
+            try:
+                with self._config_path.open(
+                    "w", encoding="utf-8", errors="replace"
+                ) as fp:
+                    json.dump(
+                        fp,
+                        self,
+                        indent=2,
+                        sort_keys=True,
+                    )
+            except PermissionError:
+                return
 
     __getitem__ = dict.get
 
     def __repr__(self) -> str:
         return str(self._config_path)
+
+    def _is_recoverable_load_error(self) -> bool:
+        try:
+            raw = self._config_path.read_bytes()
+        except OSError:
+            return True
+        stripped = raw.lstrip()
+        if stripped.startswith((b"{", b"[")):
+            return True
+        if stripped.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb\xbf")):
+            return True
+        return b"\xef\xbf\xbd" in stripped

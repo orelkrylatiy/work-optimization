@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from functools import cached_property
-from threading import Lock
+from threading import RLock
 from typing import Any, Literal, TypeVar
 from urllib.parse import urlencode, urljoin
 
@@ -55,13 +55,14 @@ class BaseClient:
     def __post_init__(self) -> None:
         assert self.base_url.endswith("/"), "base_url must ends with /"
         self.delay = self.delay or DEFAULT_DELAY
-        self.user_agent = self.user_agent or generate_android_useragent()
+        if self.user_agent is None:
+            self.user_agent = generate_android_useragent()
 
         if not self.session:
             logger.debug("create new session")
             self.session = requests.session()
 
-        self.lock = Lock()
+        self.lock = RLock()
 
     @property
     def proxies(self):
@@ -262,10 +263,16 @@ class ApiClient(BaseClient):
         try:
             return do_request()
         except errors.Forbidden as ex:
-            if not self.is_access_expired or not self.refresh_token:
+            # На практике HH иногда отвечает 403 и для "непросроченного" токена.
+            # Если есть refresh_token — пробуем один раз обновить access_token
+            # и повторить запрос.
+            if not self.refresh_token:
                 raise ex
             logger.info("try to refresh access_token")
-            self.refresh_access_token()
+            try:
+                self.refresh_access_token()
+            except Exception:
+                raise ex
             return do_request()
 
     def handle_access_token(self, token: AccessToken) -> None:

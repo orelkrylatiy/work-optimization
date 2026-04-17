@@ -212,14 +212,14 @@ class TestDatabaseTransactions:
         assert storage.vacancies.count_total() == 1
 
     def test_context_manager_rollback_on_error(
-        self, storage: StorageFacade
+        self, storage: StorageFacade, sample_vacancy_data: dict
     ):
         """Context manager should rollback on exception."""
         vacancy_repo = storage.vacancies
 
         try:
             with vacancy_repo:
-                vacancy_repo.save({"id": 1, "name": "Test"}, commit=False)
+                vacancy_repo.save(sample_vacancy_data, commit=False)
                 raise ValueError("Test error")
         except ValueError:
             pass

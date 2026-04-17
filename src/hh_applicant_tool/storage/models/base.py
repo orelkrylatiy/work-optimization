@@ -1,8 +1,23 @@
 import builtins
-from dataclasses import Field, asdict, dataclass, field, fields
+from dataclasses import (
+    MISSING as DATACLASS_MISSING,
+    Field,
+    asdict,
+    dataclass,
+    field,
+    fields,
+)
 from datetime import datetime
 from logging import getLogger
-from typing import Any, Callable, Mapping, Self, dataclass_transform, get_origin
+from typing import (
+    Any,
+    Callable,
+    Mapping,
+    Self,
+    dataclass_transform,
+    get_args,
+    get_origin,
+)
 
 from hh_applicant_tool.utils import json
 from hh_applicant_tool.utils.date import try_parse_datetime
@@ -61,10 +76,10 @@ class BaseModel:
     @classmethod
     def _coerce_type(cls, value: Any, f: Field) -> Any:
         # Лишь создатель знает, что с тобой делать
-        if get_origin(f.type):
+        type_name = cls._field_type_name(f)
+        if type_name is None:
             return value
 
-        type_name = f.type if isinstance(f.type, str) else f.type.__name__
         if value is not None and type_name in (
             "bool",
             "str",
@@ -83,6 +98,57 @@ class BaseModel:
         return value
 
     @classmethod
+    def _field_type_name(cls, f: Field) -> str | None:
+        field_type = f.type
+        if isinstance(field_type, str):
+            for part in (p.strip() for p in field_type.split("|")):
+                part = part.removeprefix("typing.")
+                if part in {"None", "NoneType"}:
+                    continue
+                if part in {"bool", "str", "int", "float"}:
+                    return part
+                if part in {"datetime", "datetime.datetime"}:
+                    return "datetime"
+            return None
+
+        origin = get_origin(field_type)
+        if origin:
+            args = [a for a in get_args(field_type) if a is not type(None)]
+            if len(args) == 1:
+                return cls._field_type_name_for_annotation(args[0])
+            return None
+        return cls._field_type_name_for_annotation(field_type)
+
+    @staticmethod
+    def _field_type_name_for_annotation(annotation: Any) -> str | None:
+        if annotation is datetime:
+            return "datetime"
+        return getattr(annotation, "__name__", None)
+
+    @staticmethod
+    def _field_default(f: Field) -> Any:
+        if f.default is not DATACLASS_MISSING:
+            return f.default
+        if f.default_factory is not DATACLASS_MISSING:
+            return f.default_factory()
+        return MISSING
+
+    @staticmethod
+    def _path_value(data: Mapping[str, Any], path: str) -> Any:
+        keys = path.split(".")
+        if not keys or keys[0] not in data:
+            return MISSING
+
+        value: Any = data[keys[0]]
+        for key in keys[1:]:
+            if not isinstance(value, Mapping):
+                return None
+            if key not in value:
+                return None
+            value = value[key]
+        return value
+
+    @classmethod
     def _from_mapping(
         cls,
         data: Mapping[str, Any],
@@ -92,20 +158,14 @@ class BaseModel:
         kwargs = {}
         for f in fields(cls):
             if from_source:
-                if f.metadata.get("skip_src") and f.name in data:
+                if f.metadata.get("skip_src"):
+                    if cls._field_default(f) is MISSING:
+                        kwargs[f.name] = None
                     continue
                 if path := f.metadata.get("path"):
-                    found = True
-                    v = data
-                    for key in path.split("."):
-                        if isinstance(v, Mapping):
-                            v = v.get(key)
-                        else:
-                            found = False
-                            break
-                    if not found:
+                    value = cls._path_value(data, path)
+                    if value is MISSING:
                         continue
-                    value = v
                 else:
                     value = data.get(f.name, MISSING)
                     if value is MISSING:

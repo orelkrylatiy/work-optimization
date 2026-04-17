@@ -37,6 +37,7 @@ pylint = "^2.16.4"
 pytest = "^7.2.2"
 ruff = "^0.14.9"
 basedpyright = "^1.36.1"
+pre-commit = "^3.0.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -49,25 +50,69 @@ hh-applicant-tool = "hh_applicant_tool.main:main"
 # проверки типов в pyright
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md
-# Ошибки показывать он не бросит, но заебывать перестанет
-typeCheckingMode = "off"
+# Покрываем проект базовой проверкой типов
+typeCheckingMode = "basic"
 
 [tool.ruff]
-line-length = 80
-# E - pycodestyle
-# F - Pyflakes
-# B - flake8-bugbear (советую добавить, ловит реальные баги)
-select = ["E", "F", "B"]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E - pycodestyle (стиль кода)
+# F - Pyflakes (ошибки)
+# B - flake8-bugbear (баги)
+# I - isort (импорты)
+# UP - pyupgrade (обновления)
+select = ["E", "F", "B", "I", "UP", "C4", "PIE", "RET", "SIM"]
 
 ignore = [
-    "E501", # Игнорим длину строк (или полагаемся на автоформаттер)
-    "E731", # Разрешаем лямбды
-    "B008", # Разрешаем вызов функций в дефолтных аргументах (удобно для FastAPI Depends или Fields)
+    "E501",  # длина строк (ruff-format справляется)
+    "E731",  # разрешаем лямбды
+    "B008",  # вызовы функций в дефолтных аргументах (FastAPI)
+    "SIM105", # use-ternary-operator
 ]
 
-# Запретить удалять импорты
-#lint.unfixable = ["F401"]
-
 [tool.ruff.lint.per-file-ignores]
-# Игнорим неиспользуемые импорты только в конфигах или __init__
-"__init__.py" = ["F401"]
+# Игнорим неиспользуемые импорты только в __init__
+"__init__.py" = ["F401", "E402"]
+"tests/*.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "-v --strict-markers --tb=short --disable-warnings"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "edge_cases: Edge case tests",
+    "slow: Slow tests",
+    "utils: Tests for utils module",
+    "api: Tests for API module",
+    "storage: Tests for storage module",
+]
+
+[tool.coverage.run]
+source = ["src/hh_applicant_tool"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+fail_under = 70
+
+[tool.coverage.html]
+directory = "htmlcov"

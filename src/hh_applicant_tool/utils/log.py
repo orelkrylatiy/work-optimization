@@ -10,6 +10,7 @@ from typing import Callable, TextIO
 
 # 10MB
 MAX_LOG_SIZE = 10 << 20
+MAX_LOG_BACKUPS = 5
 
 
 class Color(enum.Enum):
@@ -94,8 +95,8 @@ def setup_logger(
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=MAX_LOG_SIZE,
-        # Без ротации файл будет бесконечно расти, а размер не будет ограничваться
-        backupCount=1,
+        # Без ротации файл будет бесконечно расти, а размер не будет ограничиваться
+        backupCount=MAX_LOG_BACKUPS,
         encoding="utf-8",
     )
     file_handler.setFormatter(

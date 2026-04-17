@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import sys
@@ -36,6 +37,7 @@ from .utils.mixins import MegaTool
 logger = logging.getLogger(__package__)
 
 OPERATIONS = "operations"
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class BaseOperation:
@@ -52,12 +54,14 @@ class BaseOperation:
 class BaseNamespace(argparse.Namespace):
     profile_id: str
     config_dir: Path
+    no_auto_auth: bool
     verbosity: int
     api_delay: float
     user_agent: str
     proxy_url: str
     openai_proxy_url: str
     operation_run: Callable[[HHApplicantTool, BaseNamespace], None | int] | None
+    operation_name: str = ""
 
 
 class HHApplicantTool(MegaTool):
@@ -101,6 +105,11 @@ class HHApplicantTool(MegaTool):
             help="Используемый профиль — подкаталог в --config-dir. Так же можно передать через переменную окружения HH_PROFILE_ID.",
         )
         parser.add_argument(
+            "--no-auto-auth",
+            action="store_true",
+            help="Не запускать интерактивную авторизацию автоматически при отсутствии токена.",
+        )
+        parser.add_argument(
             "-d",
             "--api-delay",
             "--delay",
@@ -135,7 +144,7 @@ class HHApplicantTool(MegaTool):
                 description=op.__doc__,
                 formatter_class=cls.ArgumentFormatter,
             )
-            op_parser.set_defaults(operation_run=op.run)
+            op_parser.set_defaults(operation_run=op.run, operation_name=kebab_name)
             op.setup_parser(op_parser)
         parser.set_defaults(operation_run=None)
         return parser
@@ -215,10 +224,26 @@ class HHApplicantTool(MegaTool):
 
     @cached_property
     def config_path(self) -> Path:
-        return (
-            (self.config_dir or Path(getenv("CONFIG_DIR", CONFIG_DIR)))
-            / (self.profile_id or getenv("HH_PROFILE_ID", "."))
-        ).resolve()
+        base_dir = self.config_dir or Path(getenv("CONFIG_DIR", CONFIG_DIR))
+        profile_id = self.profile_id or getenv("HH_PROFILE_ID")
+
+        if profile_id and profile_id != ".":
+            profile_id = profile_id.strip()
+            if not PROFILE_NAME_RE.fullmatch(profile_id):
+                raise ValueError(
+                    "Invalid profile name. Use letters, numbers, dot, dash or underscore."
+                )
+
+        if profile_id and profile_id != "default":
+            return (base_dir / profile_id).resolve()
+
+        if (base_dir / "config.json").exists():
+            return base_dir.resolve()
+
+        if profile_id == "default":
+            return (base_dir / "default").resolve()
+
+        return base_dir.resolve()
 
     @cached_property
     def config(self) -> utils.Config:
@@ -429,6 +454,75 @@ class HHApplicantTool(MegaTool):
 
         return server
 
+    def _ensure_authorized(self) -> bool:
+        """Проверяет наличие токенов авторизации.
+
+        Если токены отсутствуют, предлагает пользователю авторизоваться.
+        Возвращает True если авторизация успешна, False иначе.
+        """
+        if self.api_client.access_token:
+            logger.debug("Токен авторизации найден")
+            return True
+
+        if getattr(self, "no_auto_auth", False):
+            logger.error("Требуется авторизация. Запустите: hh-applicant-tool authorize")
+            return False
+
+        logger.warning(
+            "Токен авторизации не найден. "
+            "Требуется авторизация через Playwright."
+        )
+        print("\n" + "="*60)
+        print("⚠️  Требуется авторизация для работы приложения")
+        print("="*60)
+        print("\nПеред запуском основной операции необходимо авторизоваться.")
+        print("Будет открыт браузер для ввода учетных данных HH.ru.\n")
+
+        # Импортируем здесь, чтобы избежать циклических импортов
+        from .operations import authorize
+
+        auto_auth = input("Хотите авторизоваться сейчас? (y/n): ").strip().lower()
+        if auto_auth != 'y':
+            logger.error("Авторизация отменена пользователем")
+            return False
+
+        # Запускаем операцию авторизации
+        auth_op = authorize.Operation()
+        auth_args = argparse.Namespace(
+            username=None,
+            password=None,
+            no_headless=False,
+            manual=False,
+            use_kitty=False,
+            use_sixel=False,
+            config_dir=self.config_dir,
+            profile_id=self.profile_id,
+            no_auto_auth=False,
+            verbosity=self.verbosity,
+            api_delay=self.api_delay,
+            user_agent=self.user_agent,
+            proxy_url=self.proxy_url,
+            openai_proxy_url=self.openai_proxy_url,
+        )
+
+        try:
+            result = auth_op.run(self, auth_args)
+            if result != 0:
+                logger.error("Авторизация завершилась с ошибкой")
+                return False
+
+            # Спасаем токен после успешной авторизации
+            if self.save_token():
+                logger.info("Токен сохранен успешно")
+                return True
+            else:
+                logger.warning("Токен не был сохранен")
+                return False
+
+        except Exception as ex:
+            logger.exception(f"Ошибка при авторизации: {ex}")
+            return False
+
     def run(self, argv: Sequence[str] | None = None) -> None | int:
         args = self._parser.parse_args(argv, namespace=BaseNamespace())
         self._assign_args(args)
@@ -450,8 +544,66 @@ class HHApplicantTool(MegaTool):
 
         utils.setup_terminal()
 
+        # Список операций, которые не требуют авторизации (без токена)
+        no_auth_operations = {
+            "authorize",
+            "authenticate",
+            "auth",
+            "login",
+            "config",
+            "settings",
+            "install",
+            "uninstall",
+            "migrate-db",
+            "log",
+        }
+
+        # Операции, требующие авторизации, но без инициализации браузера
+        fast_auth_check_operations = {
+            "whoami",
+            "id",
+        }
+
         try:
             if self.operation_run:
+                # Проверяем нужна ли авторизация для этой операции
+                operation_name = getattr(args, "operation_name", "")
+                needs_auth = operation_name not in no_auth_operations
+                is_fast_check = operation_name in fast_auth_check_operations
+
+                # Для операций требующих авторизации
+                if needs_auth and not self.api_client.access_token:
+                    # Для быстрых проверок (whoami) не инициируем браузер, просто ошибка
+                    if is_fast_check:
+                        logger.error(
+                            "Требуется авторизация. Запустите: hh-applicant-tool authorize"
+                        )
+                        return 1
+
+                    # Пытаемся обновить токен через refresh_token
+                    if self.api_client.refresh_token:
+                        logger.info("Пытаемся обновить токен...")
+                        try:
+                            self.api_client.refresh_access_token()
+                            if self.save_token():
+                                logger.info("Токен успешно обновлен")
+                        except Exception as ex:
+                            logger.debug(f"Не удалось обновить токен: {ex}")
+                            # Если refresh_token тоже не сработал, требуем авторизацию
+                            if self.no_auto_auth:
+                                logger.error(
+                                    "Операция отменена: требуется авторизация"
+                                )
+                                return 1
+                            if not self._ensure_authorized():
+                                logger.error("Операция отменена: требуется авторизация")
+                                return 1
+                    else:
+                        # Требуем авторизацию
+                        if not self._ensure_authorized():
+                            logger.error("Операция отменена: требуется авторизация")
+                            return 1
+
                 try:
                     return self.operation_run(self, args)
                 except KeyboardInterrupt:
@@ -463,8 +615,15 @@ class HHApplicantTool(MegaTool):
                         "Сервер HH.RU не смог обработать запрос из-за высокой"
                         " нагрузки или по иной причине"
                     )
-                except api.errors.Forbidden:
-                    logger.error("Требуется авторизация")
+                except api.errors.Forbidden as ex:
+                    request = ex.request
+                    logger.error(
+                        "Требуется авторизация: %s (HTTP %s %s -> %d)",
+                        ex.message,
+                        request.method,
+                        request.url,
+                        ex.status_code,
+                    )
                 except ValueError as ex:
                     logger.error(ex)
                 except sqlite3.Error as ex:

@@ -1,2 +1,28 @@
+[MAIN]
+# Анализировать только следующие модули
+load-plugins=pylint.extensions.docparams
+
 [MESSAGES CONTROL]
-disable=all
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    C0103,  # invalid-name (для Config классов и т.д.)
+    W0212,  # protected-access
+    R0903,  # too-few-public-methods
+    R0913,  # too-many-arguments
+
+[DESIGN]
+max-attributes=7
+max-arguments=5
+max-branches=12
+max-locals=15
+max-returns=6
+max-statements=50
+
+[FORMAT]
+max-line-length=100
+
+[TYPING]
+max-locals=15

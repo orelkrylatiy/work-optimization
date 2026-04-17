@@ -18,7 +18,7 @@ from .. import utils
 from ..api.datatypes import PaginatedItems, SearchVacancy
 from ..utils.datatypes import VacancyTestsData
 from ..utils.json import JSONDecoder
-from ..utils.string import bool2str, rand_text, strip_tags, unescape_string
+from ..utils.string import bool2str, rand_text, strip_tags
 
 logger = logging.getLogger(__package__)
 
@@ -139,7 +139,7 @@ class ApplyVacanciesHelpersMixin:
 
         logger.debug("%s", {"payload": payload})
 
-        time.sleep(random.uniform(2.0, 3.0))
+        time.sleep(random.uniform(self.response_delay_min, self.response_delay_max))
 
         response = self.tool.session.post(
             "https://hh.ru/applicant/vacancy_response/popup",

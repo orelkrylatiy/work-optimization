@@ -1,6 +1,9 @@
+import calendar
 import datetime as dt
 import json
 from typing import Any
+
+JSONDecodeError = json.JSONDecodeError
 
 # class DateAwareJSONEncoder(json.JSONEncoder):
 #     def default(self, o):
@@ -14,7 +17,12 @@ from typing import Any
 class JSONEncoder(json.JSONEncoder):
     def default(self, o):
         if isinstance(o, dt.datetime):
-            return int(o.timestamp())
+            try:
+                return int(o.timestamp())
+            except (OSError, OverflowError, ValueError):
+                if o.tzinfo is None:
+                    return calendar.timegm(o.timetuple())
+                return calendar.timegm(o.utctimetuple())
 
         return super().default(o)
 
@@ -48,17 +56,26 @@ def dumps(obj, *args: Any, **kwargs: Any) -> str:
 def dump(fp, obj, *args: Any, **kwargs: Any) -> None:
     kwargs.setdefault("cls", JSONEncoder)
     kwargs.setdefault("ensure_ascii", False)
-    json.dump(fp, obj, *args, **kwargs)
+    if hasattr(fp, "write"):
+        json.dump(obj, fp, *args, **kwargs)
+    else:
+        json.dump(fp, obj, *args, **kwargs)
 
 
 def loads(s, *args: Any, **kwargs: Any) -> Any:
     # kwargs.setdefault("object_hook", date_parser_hook)
+    kwargs.setdefault("parse_constant", _reject_constant)
     return json.loads(s, *args, **kwargs)
 
 
 def load(fp, *args: Any, **kwargs: Any) -> Any:
     # kwargs.setdefault("object_hook", date_parser_hook)
+    kwargs.setdefault("parse_constant", _reject_constant)
     return json.load(fp, *args, **kwargs)
+
+
+def _reject_constant(value: str) -> None:
+    raise json.JSONDecodeError(f"Invalid JSON constant: {value}", value, 0)
 
 
 if __name__ == "__main__":

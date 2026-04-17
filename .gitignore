@@ -93,3 +93,4 @@ Session.vim
 
 # Claude Code local settings
 .claude/
+.codex_tmp/

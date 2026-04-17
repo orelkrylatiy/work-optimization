@@ -14,6 +14,8 @@ __all__ = (
     "ClientError",
     "Forbidden",
     "InternalServerError",
+    "CaptchaRequired",
+    "LimitExceeded",
     "Redirect",
     "ResourceNotFound",
 )
@@ -46,26 +48,52 @@ class ApiError(BadResponse):
 
     @property
     def message(self) -> str:
-        return (
-            self._data.get("error_description")
-            or self._data.get("description")
-            or (
-                "An errors has occurred: "
-                + "; ".join(
-                    v["type"] + (f": {v['value']}" if "value" in v else "")
-                    for v in self._data["errors"]
-                )
+        if error_description := self._data.get("error_description"):
+            return str(error_description)
+        if description := self._data.get("description"):
+            return str(description)
+
+        errors = self._data.get("errors")
+        if errors:
+            return "An errors has occurred: " + "; ".join(
+                self._format_error_item(item) for item in errors
             )
-            if "errors" in self._data
-            else str(self._data)
-        )
+
+        return str(self._data)
+
+    @staticmethod
+    def _format_error_item(item: Any) -> str:
+        if not isinstance(item, dict):
+            return str(item)
+
+        error_type = item.get("type")
+        value = item.get("value")
+        if error_type is None and value is None:
+            return str(item)
+        if error_type is None:
+            return str(value)
+        if value is None:
+            return str(error_type)
+        return f"{error_type}: {value}"
 
     def __str__(self) -> str:
         return self.message
 
     @staticmethod
-    def has_error_value(value: str, data: dict) -> bool:
-        return any(v.get("value") == value for v in data.get("errors", []))
+    def has_error_value(value: Any, data: dict) -> bool:
+        return any(
+            item.get("value") == value
+            for item in data.get("errors", [])
+            if isinstance(item, dict)
+        )
+
+    @staticmethod
+    def has_error_type(error_type: str, data: dict) -> bool:
+        return any(
+            item.get("type") == error_type
+            for item in data.get("errors", [])
+            if isinstance(item, dict)
+        )
 
     @classmethod
     def raise_for_status(
@@ -75,11 +103,17 @@ class ApiError(BadResponse):
             case status if 300 <= status <= 308:
                 raise Redirect(response, data)
             case 400:
-                if cls.has_error_value("limit_exceeded", data):
+                if cls.has_error_type("limit_exceeded", data) or cls.has_error_value(
+                    "limit_exceeded",
+                    data,
+                ):
                     raise LimitExceeded(response, data)
                 raise BadRequest(response, data)
             case 403:
-                if cls.has_error_value("captcha_required", data):
+                if cls.has_error_type("captcha_required", data) or cls.has_error_value(
+                    "captcha_required",
+                    data,
+                ):
                     raise CaptchaRequired(response, data)
                 raise Forbidden(response, data)
             case 404:
@@ -114,14 +148,19 @@ class Forbidden(ClientError):
 
 class CaptchaRequired(ClientError):
     @cached_property
-    def captcha_url(self) -> str:
+    def captcha_url(self) -> str | None:
         return next(
-            filter(
-                lambda v: v["value"] == "captcha_required",
-                self._data["errors"],
+            (
+                item.get("captcha_url")
+                for item in self._data.get("errors", [])
+                if isinstance(item, dict)
+                and (
+                    item.get("type") == "captcha_required"
+                    or item.get("value") == "captcha_required"
+                )
             ),
-            {},
-        ).get("captcha_url")
+            None,
+        )
 
     @property
     def message(self) -> str:

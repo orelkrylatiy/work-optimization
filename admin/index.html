@@ -4,6 +4,8 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>HH Admin Panel</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23e8321c'/%3E%3Ctext x='32' y='41' text-anchor='middle' font-size='28' font-family='Arial,sans-serif' font-weight='700' fill='white'%3EHH%3C/text%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css"/>
 <style>
   :root {
     --bg: #0f1117;
@@ -37,8 +39,19 @@
   .nav-item:hover { background: var(--bg3); color: var(--text); }
   .nav-item.active { background: rgba(232,50,28,.12); color: var(--accent2); border-left-color: var(--accent); }
   .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
-  .sidebar-profile { padding: 12px 16px; border-top: 1px solid var(--border); }
-  .sidebar-profile select { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 8px; font-size: 13px; outline: none; }
+  .sidebar-profile { padding: 12px 16px; border-top: 1px solid var(--border); position: relative; }
+  .profile-trigger { width: 100%; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; font-size: 13px; cursor: pointer; text-align: left; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .profile-trigger:hover { border-color: var(--accent2); }
+  .profile-popover { position: absolute; left: 16px; right: 16px; bottom: calc(100% + 10px); background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); display: none; z-index: 30; overflow: hidden; min-width: 240px; }
+  .profile-popover.open { display: block; }
+  .profile-popover-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .profile-popover-meta { padding: 16px; font-size: 12px; color: var(--text2); display: flex; flex-direction: column; gap: 10px; }
+  .profile-identity { color: var(--text); font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .profile-output { display: none; }
+  .profile-skeleton-line { height: 10px; border-radius: 5px; background: linear-gradient(90deg, #1f2332 25%, #2a3044 37%, #1f2332 63%); background-size: 400% 100%; animation: profile-skeleton 1.2s ease infinite; margin: 8px 0; }
+  .profile-skeleton-line.short { width: 45%; }
+  .profile-skeleton-line.mid { width: 70%; }
+  @keyframes profile-skeleton { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .topbar { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--bg2); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -181,7 +194,13 @@
 
   @media (max-width: 768px) {
     .sidebar { width: 60px; }
-    .sidebar-logo span, .nav-item span, .sidebar-profile { display: none; }
+    .sidebar-logo { padding: 16px 8px; justify-content: center; }
+    .sidebar-logo span { display: none; }
+    .nav-item { gap: 0; padding: 9px 8px; justify-content: center; }
+    .nav-item span { display: none; }
+    .sidebar-profile { padding: 8px 8px; }
+    .profile-trigger { padding: 8px; width: 100%; }
+    .profile-trigger span:last-child { display: none; }
     .form-row { grid-template-columns: 1fr; }
   }
 </style>
@@ -189,7 +208,7 @@
 <body>
 <div class="app">
   <!-- Sidebar -->
-  <nav class="sidebar">
+  <nav class="sidebar animate__animated animate__fadeInLeft">
     <div class="sidebar-logo">
       <div class="logo-icon">HH</div>
       <span>Admin Panel</span>
@@ -210,8 +229,17 @@
       <div class="nav-item" data-page="employers" onclick="goPage('employers')">
         <span class="icon">🏢</span><span>Работодатели</span>
       </div>
+      <div class="nav-item" data-page="inbox" onclick="goPage('inbox')">
+        <span class="icon">📨</span><span>Сообщения</span>
+      </div>
+      <div class="nav-item" data-page="apply-form" onclick="goPage('apply-form')">
+        <span class="icon">🎯</span><span>Форма отклика</span>
+      </div>
       <div class="nav-item" data-page="letter" onclick="goPage('letter')">
         <span class="icon">✉️</span><span>Генератор писем</span>
+      </div>
+      <div class="nav-item" data-page="letter-template" onclick="goPage('letter-template')">
+        <span class="icon">📝</span><span>Шаблон письма</span>
       </div>
       <div class="nav-item" data-page="run" onclick="goPage('run')">
         <span class="icon">▶️</span><span>Запуск задач</span>
@@ -219,14 +247,27 @@
       <div class="nav-item" data-page="config" onclick="goPage('config')">
         <span class="icon">⚙️</span><span>Настройки</span>
       </div>
-      <div class="nav-item" data-page="logs" onclick="goPage('logs')">
-        <span class="icon">📋</span><span>Логи</span>
-      </div>
     </div>
     <div class="sidebar-profile">
-      <select id="profile-select" onchange="onProfileChange()">
+      <button class="profile-trigger" id="profile-trigger" onclick="toggleProfilePopover(event)">
+        <span>👤 <span id="profile-current-label">default</span></span>
+        <span id="profile-trigger-caret">▲</span>
+      </button>
+      <select id="profile-select" onchange="onProfileChange()" style="display:none">
         <option value="default">default</option>
       </select>
+      <div class="profile-popover" id="profile-popover">
+        <div class="profile-popover-meta">
+          <div class="profile-identity" id="profile-identity">Не загружено</div>
+          <div>Профиль: <span id="profile-popover-label">default</span></div>
+          <div>Статус: <span id="profile-auth-status">Проверка...</span></div>
+          <button class="btn btn-secondary" style="padding:6px 10px;font-size:12px;width:100%;margin-top:4px" onclick="loadWhoami(true)">🔄 Обновить профиль</button>
+          <button class="btn btn-primary" style="padding:6px 10px;font-size:12px;width:100%" onclick="reauthorizeCurrentProfile()">🔐 Войти / перелогиниться</button>
+          <button class="btn btn-secondary" style="padding:6px 10px;font-size:12px;width:100%" onclick="createProfileAndAuthorize()">➕ Добавить аккаунт</button>
+          <button class="btn btn-danger" style="padding:6px 10px;font-size:12px;width:100%" onclick="logoutCurrentProfile()">🚪 Выйти из аккаунта</button>
+        </div>
+        <pre class="profile-output" id="profile-output">Нажми на кнопку обновления…</pre>
+      </div>
     </div>
   </nav>
 
@@ -239,11 +280,11 @@
       </div>
       <div id="operations-list" style="display:flex;flex-direction:column;gap:6px;padding-left:22px"></div>
     </div>
-    <div class="topbar">
+    <div class="topbar animate__animated animate__slideInDown">
       <h1 id="page-title">Дашборд</h1>
       <div id="topbar-actions"></div>
     </div>
-    <div class="content" id="content">
+    <div class="content animate__animated animate__fadeInUp" id="content">
       <div style="color:var(--text2);text-align:center;padding:60px">Загрузка...</div>
     </div>
   </div>
@@ -252,7 +293,7 @@
 <div id="toast-container"></div>
 
 <!-- Modal для подтверждения запуска откликов -->
-<div id="apply-modal" class="modal-overlay" style="display:none">
+<div id="apply-modal" class="modal-overlay animate__animated" style="display:none">
   <div class="modal">
     <h2>🎯 Подтверждение запуска откликов</h2>
 
@@ -297,6 +338,7 @@
 <script>
 const API = '';
 let currentProfile = 'default';
+let availableProfiles = [];
 let currentPage = 'dashboard';
 let CONSTANTS = null;
 
@@ -319,7 +361,11 @@ async function loadConstants() {
         employers: '/api/employers',
         resumes: '/api/resumes',
         config: '/api/config',
+        user: '/api/user',
         logs: '/api/logs',
+        whoami: '/api/whoami',
+        logout: '/api/auth/logout',
+        reauthorize: '/api/auth/reauthorize',
         generate_letter: '/api/generate-letter',
         run: '/api/run',
         cancel: '/api/cancel',
@@ -380,10 +426,9 @@ function showSetupPage(status) {
         <div style="border-left:3px solid var(--accent);padding-left:16px;margin-bottom:20px">
           <p style="font-size:14px;font-weight:600;margin-bottom:8px">Шаги для запуска:</p>
           <ol style="color:var(--text2);font-size:13px;line-height:2;padding-left:20px">
-            <li>Откройте терминал в папке проекта</li>
-            <li>Установите зависимости: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">pip install -e .</code></li>
-            <li>Авторизуйтесь: <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">python -m hh_applicant_tool auth</code></li>
-            <li>После авторизации обновите страницу</li>
+            <li>Нажмите кнопку ниже, чтобы создать профиль и открыть вход в HH.ru</li>
+            <li>В открывшемся окне браузера войдите в нужный аккаунт</li>
+            <li>После завершения авторизации панель начнёт использовать этот профиль</li>
           </ol>
         </div>
 
@@ -391,7 +436,10 @@ function showSetupPage(status) {
           <p style="font-size:13px;color:var(--text2)"><span style="color:var(--blue)">💡 Docker-режим:</span> Если используете Docker, данные хранятся в <code style="background:var(--bg3);padding:2px 6px;border-radius:4px">config/</code> в корне проекта. Запустите контейнер и обновите страницу.</p>
         </div>
 
-        <button class="btn btn-primary" onclick="checkReady()">🔄 Проверить снова</button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="startInitialAuthorization()">🔐 Создать профиль и войти</button>
+          <button class="btn btn-secondary" onclick="checkReady()">🔄 Проверить снова</button>
+        </div>
       </div>
     </div>`;
 }
@@ -411,33 +459,284 @@ async function checkReady() {
   }
 }
 
-async function loadProfiles() {
+function suggestProfileName() {
+  let index = availableProfiles.length + 1;
+  let candidate = `account-${index}`;
+  while (availableProfiles.includes(candidate)) {
+    index += 1;
+    candidate = `account-${index}`;
+  }
+  return candidate;
+}
+
+async function loadProfiles(preferredProfile = null) {
   try {
     const r = await api(CONSTANTS.endpoints.profiles);
     const sel = document.getElementById('profile-select');
+    availableProfiles = Array.isArray(r.profiles) ? [...r.profiles] : [];
     sel.innerHTML = '';
-    if (r.profiles.length === 0) {
+    if (availableProfiles.length === 0) {
       sel.innerHTML = `<option value="${CONSTANTS.defaults.profile}">${CONSTANTS.defaults.profile}</option>`;
+      currentProfile = CONSTANTS.defaults.profile;
     } else {
-      r.profiles.forEach(p => {
+      availableProfiles.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p; opt.textContent = p;
         sel.appendChild(opt);
       });
 
-      // Восстанавливаем последний выбранный профиль
-      const lastProfile = localStorage.getItem('lastProfile') || r.profiles[0];
-      currentProfile = lastProfile;
+      const savedProfile = preferredProfile || localStorage.getItem('lastProfile');
+      currentProfile = availableProfiles.includes(savedProfile) ? savedProfile : availableProfiles[0];
       sel.value = currentProfile;
     }
+    setProfileLabels();
   } catch(e) {}
 }
 
 function onProfileChange() {
   currentProfile = document.getElementById('profile-select').value;
+  const labelEl = document.getElementById('profile-current-label');
+  const popLabelEl = document.getElementById('profile-popover-label');
+  if (labelEl) labelEl.textContent = currentProfile;
+  if (popLabelEl) popLabelEl.textContent = currentProfile;
   localStorage.setItem('lastProfile', currentProfile);  // Сохраняем профиль
+  if (document.getElementById('profile-popover')?.classList.contains('open')) {
+    loadWhoami();
+  }
   goPage(currentPage);
 }
+
+function toggleProfilePopover(event) {
+  event.stopPropagation();
+  const pop = document.getElementById('profile-popover');
+  const caret = document.getElementById('profile-trigger-caret');
+  if (!pop) return;
+  pop.classList.toggle('open');
+  if (caret) caret.textContent = pop.classList.contains('open') ? '▼' : '▲';
+  if (pop.classList.contains('open')) {
+    loadWhoami();
+  }
+}
+
+async function loadWhoami(showToast = false) {
+  const out = document.getElementById('profile-output');
+  const identity = document.getElementById('profile-identity');
+  const authStatus = document.getElementById('profile-auth-status');
+  if (!out) return;
+  if (identity) {
+    identity.innerHTML = '<div class="profile-skeleton-line mid"></div>';
+  }
+  if (authStatus) {
+    authStatus.textContent = 'Проверка...';
+  }
+  out.innerHTML = '<div class="profile-skeleton-line"></div><div class="profile-skeleton-line short"></div><div class="profile-skeleton-line mid"></div>';
+  try {
+    const userData = await api(CONSTANTS.endpoints.user);
+    if (!userData.token_valid) {
+      if (identity) identity.textContent = 'Не авторизован';
+      if (authStatus) authStatus.textContent = 'Не авторизован';
+      out.textContent = userData.error || 'Для этого профиля вход ещё не выполнен.';
+      if (showToast) {
+        toast('Профиль не авторизован', 'error');
+      }
+      return;
+    }
+
+    if (authStatus) {
+      authStatus.textContent = 'Авторизован';
+    }
+
+    const data = await api(CONSTANTS.endpoints.whoami);
+    const blocks = [];
+    if (identity) {
+      const fullName = data.full_name || [userData.first_name, userData.last_name].filter(Boolean).join(' ');
+      identity.textContent = fullName || userData.email || 'ФИО не определено';
+    }
+    if (data.stdout) blocks.push(data.stdout.trimEnd());
+    if (data.stderr) blocks.push(`stderr:\n${data.stderr.trimEnd()}`);
+    if (userData.email && userData.email !== 'unknown') {
+      blocks.unshift(`email: ${userData.email}`);
+    }
+    blocks.push(`exit code: ${data.returncode}`);
+    out.textContent = blocks.filter(Boolean).join('\n\n');
+    if (showToast) {
+      toast('whoami обновлён');
+    }
+  } catch (e) {
+    if (identity) identity.textContent = 'Ошибка загрузки';
+    if (authStatus) authStatus.textContent = 'Ошибка';
+    out.textContent = `Ошибка whoami: ${e.message}`;
+    if (showToast) {
+      toast(e.message, 'error');
+    }
+  }
+}
+
+function closeProfilePopover() {
+  const pop = document.getElementById('profile-popover');
+  const caret = document.getElementById('profile-trigger-caret');
+  if (pop) pop.classList.remove('open');
+  if (caret) caret.textContent = '▲';
+}
+
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const data = await resp.json().catch(() => ({detail: resp.statusText}));
+  if (!resp.ok) {
+    throw new Error(data.detail || resp.statusText);
+  }
+  return data;
+}
+
+async function trackBackgroundOperation(opId, opName, hooks = {}) {
+  runningOps[opId] = {
+    name: opName,
+    completed: false,
+    result: null
+  };
+  await updateOperationsList();
+
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    try {
+      const statusUrl = `${CONSTANTS.endpoints.operation_status}/${opId}?profile=${encodeURIComponent(currentProfile)}`;
+      const statusData = await fetchJson(statusUrl);
+
+      if (statusData.running) {
+        continue;
+      }
+
+      runningOps[opId].completed = true;
+      runningOps[opId].result = statusData;
+
+      if (hooks.outputEl) {
+        const out = [statusData.stdout, statusData.stderr].filter(Boolean).join('\n---stderr---\n');
+        hooks.outputEl.textContent = out || '(нет вывода)';
+      }
+
+      const returnCode = typeof statusData.returncode === 'number' ? statusData.returncode : (statusData.returncode || 1);
+      if (returnCode === 0) {
+        toast(`${opName} завершён успешно ✅`);
+        if (hooks.onSuccess) {
+          await hooks.onSuccess(statusData);
+        }
+      } else {
+        toast(`${opName} завершён с кодом ${returnCode} ❌`, 'error');
+        if (hooks.onError) {
+          await hooks.onError(statusData);
+        }
+      }
+
+      setTimeout(() => {
+        delete runningOps[opId];
+        updateOperationsList();
+      }, 5000);
+
+      await updateOperationsList();
+      return statusData;
+    } catch (e) {
+      console.error('Ошибка при проверке статуса:', e);
+    }
+  }
+}
+
+async function reauthorizeCurrentProfile() {
+  await startAuthorizationForProfile(currentProfile);
+}
+
+async function startAuthorizationForProfile(profile) {
+  try {
+    closeProfilePopover();
+    const url = `${CONSTANTS.endpoints.reauthorize}?profile=${encodeURIComponent(profile)}&manual=true&visible=true`;
+    const data = await fetchJson(url, {method: 'POST'});
+    await loadProfiles(profile);
+    onProfileChange();
+    toast('Откроется окно браузера для входа в HH.ru');
+    await trackBackgroundOperation(data.op_id, `🔐 Авторизация (${profile})`, {
+      onSuccess: async () => {
+        await loadProfiles(profile);
+        onProfileChange();
+      }
+    });
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function createProfileAndAuthorize() {
+  const suggested = suggestProfileName();
+  const raw = prompt('Название нового профиля', suggested);
+  if (raw === null) return;
+
+  const profile = raw.trim();
+  if (!profile) {
+    toast('Название профиля не может быть пустым', 'error');
+    return;
+  }
+
+  try {
+    closeProfilePopover();
+    await fetchJson(CONSTANTS.endpoints.profiles, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({profile})
+    });
+    await loadProfiles(profile);
+    onProfileChange();
+    await startAuthorizationForProfile(profile);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function logoutCurrentProfile() {
+  if (!confirm(`Выйти из аккаунта профиля "${currentProfile}"?`)) return;
+
+  try {
+    closeProfilePopover();
+    const url = `${CONSTANTS.endpoints.logout}?profile=${encodeURIComponent(currentProfile)}`;
+    await fetchJson(url, {method: 'POST'});
+    await loadWhoami();
+    goPage(currentPage);
+    toast('Токены очищены, можно входить заново');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function startInitialAuthorization() {
+  try {
+    await fetchJson(CONSTANTS.endpoints.profiles, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({profile: CONSTANTS.defaults.profile})
+    });
+    await loadProfiles(CONSTANTS.defaults.profile);
+    goPage('dashboard');
+    await startAuthorizationForProfile(CONSTANTS.defaults.profile);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function setProfileLabels() {
+  const labelEl = document.getElementById('profile-current-label');
+  const popLabelEl = document.getElementById('profile-popover-label');
+  if (labelEl) labelEl.textContent = currentProfile;
+  if (popLabelEl) popLabelEl.textContent = currentProfile;
+}
+
+document.addEventListener('click', function(e) {
+  const pop = document.getElementById('profile-popover');
+  const trigger = document.getElementById('profile-trigger');
+  const caret = document.getElementById('profile-trigger-caret');
+  if (!pop || !trigger) return;
+  if (!pop.contains(e.target) && !trigger.contains(e.target)) {
+    pop.classList.remove('open');
+    if (caret) caret.textContent = '▲';
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Navigation
@@ -448,10 +747,12 @@ const PAGE_TITLES = {
   vacancies: 'Вакансии',
   skipped: 'Пропущенные вакансии',
   employers: 'Работодатели',
+  inbox: 'Сообщения',
+  'apply-form': 'Форма отклика',
   letter: 'Генератор писем',
+  'letter-template': 'Шаблон письма',
   run: 'Запуск задач',
   config: 'Настройки',
-  logs: 'Логи',
 };
 
 function goPage(page) {
@@ -462,7 +763,15 @@ function goPage(page) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === page);
   });
-  const pages = { dashboard, negotiations, vacancies, skipped, employers, letter, run, config, logs };
+
+  // Анимация контента при переходе
+  const content = document.getElementById('content');
+  content.classList.remove('animate__fadeInUp');
+  void content.offsetWidth; // Trigger reflow
+  content.classList.add('animate__fadeInUp');
+
+  if (page === 'logs') page = 'run';
+  const pages = { dashboard, negotiations, vacancies, skipped, employers, inbox, letter, 'letter-template': letterTemplate, 'apply-form': applyForm, run, config };
   if (pages[page]) pages[page]();
 }
 
@@ -470,6 +779,9 @@ function goPage(page) {
 // API helper
 // ---------------------------------------------------------------------------
 async function api(path, opts = {}) {
+  if (!path) {
+    throw new Error('API endpoint is not defined');
+  }
   const url = path + (path.includes('?') ? '&' : '?') + 'profile=' + encodeURIComponent(currentProfile);
   const resp = await fetch(url, opts);
   if (!resp.ok) {
@@ -482,10 +794,13 @@ async function api(path, opts = {}) {
 function toast(msg, type = 'success') {
   const c = document.getElementById('toast-container');
   const t = document.createElement('div');
-  t.className = `toast ${type}`;
+  t.className = `toast ${type} animate__animated animate__slideInRight`;
   t.textContent = msg;
   c.appendChild(t);
-  setTimeout(() => t.remove(), 3500);
+  setTimeout(() => {
+    t.classList.add('animate__slideOutRight');
+    setTimeout(() => t.remove(), 500);
+  }, 3000);
 }
 
 function stateHtml(state) {
@@ -543,11 +858,20 @@ function showApplyModal() {
     pendingApplyMode = false;
   }
 
-  document.getElementById('apply-modal').style.display = 'flex';
+  const modal = document.getElementById('apply-modal');
+  modal.classList.add('animate__zoomIn');
+  modal.style.display = 'flex';
 }
 
 function closeApplyModal() {
-  document.getElementById('apply-modal').style.display = 'none';
+  const modal = document.getElementById('apply-modal');
+  modal.classList.remove('animate__zoomIn');
+  modal.classList.add('animate__zoomOut');
+  setTimeout(() => {
+    modal.style.display = 'none';
+    modal.classList.remove('animate__zoomOut');
+    modal.classList.add('animate__zoomIn');
+  }, 300);
   pendingApplyMode = null;
 }
 
@@ -590,6 +914,7 @@ document.addEventListener('click', function(e) {
 // ---------------------------------------------------------------------------
 
 // DASHBOARD
+function formatSalary(row) {
   if (!row.salary_from && !row.salary_to) return '<span style="color:var(--text2)">—</span>';
   const cur = row.currency || '';
   const from = row.salary_from ? `от ${row.salary_from.toLocaleString()}` : '';
@@ -599,15 +924,20 @@ document.addEventListener('click', function(e) {
 
 function timeAgo(dt) {
   if (!dt) return '—';
-  const d = new Date(dt.replace(' ', 'T') + 'Z');
+  const raw = String(dt).trim();
+  if (!raw) return '—';
+
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized);
+  const d = new Date(hasTimezone ? normalized : `${normalized}Z`);
   const diff = (Date.now() - d) / 1000;
+  if (!Number.isFinite(diff)) return '—';
   if (diff < 60) return 'только что';
   if (diff < 3600) return Math.floor(diff/60) + ' мин. назад';
   if (diff < 86400) return Math.floor(diff/3600) + ' ч. назад';
   return Math.floor(diff/86400) + ' д. назад';
 }
 
-function stateHtml(state) {
 async function dashboard() {
   const c = document.getElementById('content');
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
@@ -631,15 +961,17 @@ async function dashboard() {
     }
 
     // Daily chart
-    const days = d.daily_applications;
-    const maxDay = Math.max(1, ...days.map(x => x.cnt));
+    const days = Array.isArray(d.daily_applications) ? d.daily_applications : [];
+    const maxDay = Math.max(1, ...days.map(x => Number(x?.cnt) || 0));
     let dayCols = '';
     if (days.length) {
       days.forEach(day => {
-        const h = Math.round((day.cnt / maxDay) * 64) + 4;
-        const label = day.day.slice(5); // MM-DD
+        const dayCount = Number(day?.cnt) || 0;
+        const h = Math.round((dayCount / maxDay) * 64) + 4;
+        const dayValue = typeof day?.day === 'string' ? day.day : '';
+        const label = dayValue.length >= 5 ? dayValue.slice(5) : '—'; // MM-DD
         dayCols += `<div class="day-col">
-          <div style="font-size:10px;color:var(--text2);margin-bottom:2px">${day.cnt}</div>
+          <div style="font-size:10px;color:var(--text2);margin-bottom:2px">${dayCount}</div>
           <div class="day-bar" style="height:${h}px"></div>
           <div class="day-label">${label}</div>
         </div>`;
@@ -764,7 +1096,7 @@ async function negotiations(state_filter) {
     if (r.items.length) {
       r.items.forEach(n => {
         const link = n.vacancy_url ? `<a href="${n.vacancy_url}" target="_blank">${n.vacancy_name || n.id}</a>` : (n.vacancy_name || n.id);
-        const sal = salary(n);
+        const sal = formatSalary(n);
         rows += `<tr>
           <td>${stateHtml(n.state)}</td>
           <td style="max-width:260px">${link}</td>
@@ -828,7 +1160,7 @@ async function vacancies() {
           <td style="max-width:280px">${link}</td>
           <td>${v.employer_name || '—'}</td>
           <td>${v.area_name || '—'}</td>
-          <td>${salary(v)}</td>
+          <td>${formatSalary(v)}</td>
           <td style="color:var(--text2)">${v.experience || '—'}</td>
           <td style="color:var(--text2)">${timeAgo(v.created_at)}</td>
         </tr>`;
@@ -1088,6 +1420,11 @@ async function run() {
         <div class="run-output" id="out-${CONSTANTS.operations.apply_vacancies}"></div>
       </div>
     </div>
+    <div class="section" style="margin-top:20px">
+      <div class="section-title">📋 Логи</div>
+      <div id="run-logs-meta" style="margin-bottom:12px;color:var(--text2);font-size:13px">Загрузка логов...</div>
+      <div class="log-box" id="run-logs-box">Загрузка...</div>
+    </div>
     <div style="margin-top:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:13px">
       ⚠️ Операции запускаются в фоне и могут занять несколько минут. Не закрывайте страницу до завершения.
       ${activeOps.length > 0 ? `<br/>🔄 Активных операций: ${activeOps.length}` : ''}
@@ -1100,6 +1437,32 @@ async function run() {
       delayInput.value = CONSTANTS.defaults.response_delay;
     }
   }, 0);
+
+  try {
+    const r = await api(`${CONSTANTS.endpoints.logs}?lines=300`);
+    const box = document.getElementById('run-logs-box');
+    const meta = document.getElementById('run-logs-meta');
+    if (box && meta) {
+      box.innerHTML = '';
+      r.lines.forEach(line => {
+        const span = document.createElement('span');
+        if (/error|exception|traceback/i.test(line)) span.className = 'log-error';
+        else if (/warn/i.test(line)) span.className = 'log-warn';
+        else if (/info|успешно|применён/i.test(line)) span.className = 'log-info';
+        span.textContent = line;
+        box.appendChild(span);
+      });
+      meta.textContent = `Последние ${r.lines.length} строк лога`;
+      box.scrollTop = box.scrollHeight;
+    }
+  } catch (e) {
+    const box = document.getElementById('run-logs-box');
+    const meta = document.getElementById('run-logs-meta');
+    if (box && meta) {
+      meta.textContent = 'Ошибка загрузки логов';
+      box.textContent = `Ошибка: ${e.message}`;
+    }
+  }
 }
 
 // Отслеживание запущенных операций
@@ -1368,6 +1731,460 @@ async function logs() {
   } catch(e) {
     c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// INBOX (Сообщения от работодателей)
+// ---------------------------------------------------------------------------
+let inboxPage = 0;
+let inboxStatus = '';
+let openConvId = null;
+
+async function inbox() {
+  const c = document.getElementById('content');
+  document.getElementById('topbar-actions').innerHTML =
+    `<button class="btn btn-danger" onclick="clearRejections()" title="Удалить все отказы из переписок">🗑 Очистить отказы</button>
+     <button class="btn btn-secondary" onclick="inboxPage=0;inbox()">🔄</button>`;
+
+  c.innerHTML = `
+    <div class="filters">
+      <select id="inbox-status" onchange="inboxStatus=this.value;inboxPage=0;inbox()">
+        <option value="">Все переписки</option>
+        <option value="invitation">Приглашения</option>
+        <option value="active">Активные</option>
+        <option value="discard">Отказы</option>
+      </select>
+    </div>
+    <div style="color:var(--text2)">Загрузка...</div>`;
+
+  document.getElementById('inbox-status').value = inboxStatus;
+
+  try {
+    const r = await api(`/api/inbox?page=${inboxPage}&per_page=30${inboxStatus ? '&status='+inboxStatus : ''}`);
+    if (!r.items.length) {
+      c.innerHTML = `<div class="filters"><select id="inbox-status" onchange="inboxStatus=this.value;inboxPage=0;inbox()">
+        <option value="">Все переписки</option><option value="invitation">Приглашения</option>
+        <option value="active">Активные</option><option value="discard">Отказы</option></select></div>
+        <div style="color:var(--text2);text-align:center;padding:40px">Переписок не найдено</div>`;
+      document.getElementById('inbox-status').value = inboxStatus;
+      return;
+    }
+
+    let rows = '';
+    r.items.forEach(n => {
+      const hasUpdates = n.has_updates ? '🔵 ' : '';
+      const link = n.vacancy_url ? `<a href="${n.vacancy_url}" target="_blank">${n.vacancy_name || '—'}</a>` : (n.vacancy_name || '—');
+      rows += `<tr style="cursor:pointer" onclick="openConversation(${n.id}, '${(n.vacancy_name||'').replace(/'/g,"\\'")}', '${(n.employer_name||'').replace(/'/g,"\\'")}')">
+        <td>${stateHtml(n.state)}</td>
+        <td style="max-width:240px">${hasUpdates}${link}</td>
+        <td>${n.employer_name || '—'}</td>
+        <td style="color:var(--text2)">${timeAgo(n.updated_at || n.created_at)}</td>
+        <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="event.stopPropagation();openConversation(${n.id},'${(n.vacancy_name||'').replace(/'/g,"\\'")}','${(n.employer_name||'').replace(/'/g,"\\'")}')">Открыть →</button></td>
+      </tr>`;
+    });
+
+    c.innerHTML = `
+      <div class="filters">
+        <select id="inbox-status" onchange="inboxStatus=this.value;inboxPage=0;inbox()">
+          <option value="">Все переписки</option>
+          <option value="invitation">Приглашения</option>
+          <option value="active">Активные</option>
+          <option value="discard">Отказы</option>
+        </select>
+        <span style="color:var(--text2);font-size:13px">Найдено: ${r.found}</span>
+      </div>
+      <div class="table-wrap">
+        <table><thead><tr><th>Статус</th><th>Вакансия</th><th>Работодатель</th><th>Обновлено</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-secondary" onclick="inboxPage=Math.max(0,inboxPage-1);inbox()" ${inboxPage===0?'disabled':''}>← Назад</button>
+        <span>Стр. ${r.page+1} / ${r.pages||1}</span>
+        <button class="btn btn-secondary" onclick="inboxPage++;inbox()" ${r.page>=r.pages-1?'disabled':''}>Вперёд →</button>
+      </div>
+      <div id="conversation-panel"></div>`;
+    document.getElementById('inbox-status').value = inboxStatus;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red);padding:20px">Ошибка: ${e.message}</div>`;
+  }
+}
+
+async function openConversation(negId, vacancyName, employerName) {
+  const panel = document.getElementById('conversation-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div style="padding:20px;color:var(--text2)">Загрузка...</div>';
+  panel.scrollIntoView({behavior:'smooth'});
+
+  try {
+    const r = await api(`/api/inbox/${negId}/messages`);
+    let msgs = '';
+    r.messages.forEach(m => {
+      const align = m.is_employer ? 'left' : 'right';
+      const bg = m.is_employer ? 'var(--bg3)' : 'rgba(232,50,28,.12)';
+      const label = m.is_employer ? (employerName || 'HR') : 'Вы';
+      msgs += `<div style="display:flex;flex-direction:column;align-items:${align==='left'?'flex-start':'flex-end'};margin-bottom:12px">
+        <div style="font-size:11px;color:var(--text2);margin-bottom:3px">${label} · ${timeAgo(m.created_at)}</div>
+        <div style="background:${bg};padding:10px 14px;border-radius:12px;max-width:75%;font-size:13px;line-height:1.6;white-space:pre-wrap">${m.text}</div>
+      </div>`;
+    });
+
+    panel.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-top:20px">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-weight:600">${vacancyName || 'Переписка'}</div>
+            <div style="font-size:12px;color:var(--text2)">${employerName || ''} · ${r.found} сообщений</div>
+          </div>
+          <button class="btn btn-secondary" onclick="document.getElementById('conversation-panel').innerHTML=''" style="padding:4px 10px;font-size:12px">✕</button>
+        </div>
+        <div style="padding:16px;max-height:400px;overflow-y:auto" id="msgs-${negId}">${msgs || '<div style="color:var(--text2);text-align:center">Нет сообщений</div>'}</div>
+        <div style="padding:12px 16px;border-top:1px solid var(--border)">
+          <div style="display:flex;gap:8px;margin-bottom:8px">
+            <textarea id="reply-text-${negId}" placeholder="Написать ответ..." style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:8px 12px;font-size:13px;resize:none;height:80px;outline:none"></textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="sendReply(${negId},'${(vacancyName||'').replace(/'/g,"\\'")}','${(employerName||'').replace(/'/g,"\\'")}')">📤 Отправить</button>
+            <button class="btn btn-secondary" onclick="genAiReply(${negId},'${(vacancyName||'').replace(/'/g,"\\'")}','${(employerName||'').replace(/'/g,"\\'")}')">🤖 AI-ответ</button>
+          </div>
+        </div>
+      </div>`;
+    const msgsDiv = document.getElementById(`msgs-${negId}`);
+    if (msgsDiv) msgsDiv.scrollTop = msgsDiv.scrollHeight;
+  } catch(e) {
+    panel.innerHTML = `<div style="color:var(--red);padding:16px">Ошибка: ${e.message}</div>`;
+  }
+}
+
+async function sendReply(negId, vacancyName, employerName) {
+  const ta = document.getElementById(`reply-text-${negId}`);
+  const text = ta?.value.trim();
+  if (!text) return toast('Введите сообщение', 'error');
+
+  try {
+    await fetch(`/api/inbox/${negId}/reply?profile=${encodeURIComponent(currentProfile)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text, profile: currentProfile, vacancy_name: vacancyName, employer_name: employerName})
+    }).then(r => { if(!r.ok) return r.json().then(e=>{throw new Error(e.detail)}); return r.json(); });
+    toast('Сообщение отправлено!');
+    ta.value = '';
+    openConversation(negId, vacancyName, employerName);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function genAiReply(negId, vacancyName, employerName) {
+  const ta = document.getElementById(`reply-text-${negId}`);
+  if (!ta) return;
+  ta.value = '⏳ Генерирую...';
+  ta.disabled = true;
+  try {
+    const r = await fetch(`/api/inbox/${negId}/reply?profile=${encodeURIComponent(currentProfile)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: '', use_ai: true, profile: currentProfile, vacancy_name: vacancyName, employer_name: employerName})
+    }).then(r => { if(!r.ok) return r.json().then(e=>{throw new Error(e.detail)}); return r.json(); });
+    // AI сгенерировал и уже отправил — показываем в поле для ознакомления
+    ta.value = r.sent || '';
+    toast('AI-ответ отправлен!');
+    openConversation(negId, vacancyName, employerName);
+  } catch(e) {
+    ta.value = '';
+    toast(e.message, 'error');
+  } finally {
+    ta.disabled = false;
+  }
+}
+
+async function clearRejections() {
+  if (!confirm('Очистить все отказы из входящих?\nЭто скроет переписки со статусом "отказ".')) return;
+  try {
+    // Dry-run сначала
+    const dry = await api(`/api/inbox/clear-rejections?dry_run=true`);
+    if (!dry.total_discards) { toast('Отказов не найдено'); return; }
+    if (!confirm(`Найдено ${dry.total_discards} отказов. Удалить?`)) return;
+    const r = await fetch(`/api/inbox/clear-rejections?profile=${encodeURIComponent(currentProfile)}`, {method:'POST'})
+      .then(r => r.json());
+    toast(`Удалено ${r.cleared} отказов`);
+    inbox();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ---------------------------------------------------------------------------
+// APPLY FORM — полная форма запуска откликов
+// ---------------------------------------------------------------------------
+async function applyForm() {
+  const c = document.getElementById('content');
+
+  // Загружаем резюме для выбора
+  let resumeOpts = '<option value="">— Все резюме —</option>';
+  try {
+    const r = await api('/api/resumes');
+    r.items.forEach(res => {
+      resumeOpts += `<option value="${res.id}">${res.title}</option>`;
+    });
+  } catch(e) {}
+
+  c.innerHTML = `
+    <div style="max-width:800px">
+    <div class="letter-form">
+
+      <!-- Базовые настройки -->
+      <div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:14px;text-transform:uppercase;letter-spacing:.05em">🔍 Поиск вакансий</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Ключевые слова</label>
+          <input id="af-search" placeholder="python developer, backend, fastapi..." />
+        </div>
+        <div class="form-group">
+          <label>Резюме</label>
+          <select id="af-resume">${resumeOpts}</select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Город (код HH)</label>
+          <input id="af-area" placeholder="1 = Москва, 2 = СПб, 3 = Екб" />
+          <div style="font-size:11px;color:var(--text2);margin-top:3px">Несколько через запятую: 1,2</div>
+        </div>
+        <div class="form-group">
+          <label>Исключить из названия (regex)</label>
+          <input id="af-excluded" placeholder="менеджер|продажи|1С" />
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+      <!-- Фильтры -->
+      <div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:14px;text-transform:uppercase;letter-spacing:.05em">📋 Фильтры</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Опыт работы</label>
+          <select id="af-exp">
+            <option value="">Любой</option>
+            <option value="noExperience">Без опыта</option>
+            <option value="between1And3">1–3 года</option>
+            <option value="between3And6">3–6 лет</option>
+            <option value="moreThan6">Более 6 лет</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Минимальная зарплата</label>
+          <input id="af-salary" type="number" placeholder="100000" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>График работы</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-schedule" value="remote"> Удалёнка</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-schedule" value="fullDay"> Полный день</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-schedule" value="flexible"> Гибкий</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-schedule" value="shift"> Сменный</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Занятость</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-employment" value="full"> Полная</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-employment" value="part"> Частичная</label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="checkbox" class="af-employment" value="project"> Проектная</label>
+          </div>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+      <!-- AI настройки -->
+      <div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:14px;text-transform:uppercase;letter-spacing:.05em">🤖 AI настройки</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>AI фильтр вакансий</label>
+          <select id="af-aifilter">
+            <option value="">Без AI фильтра</option>
+            <option value="light">Лёгкий (название + навыки)</option>
+            <option value="heavy">Полный анализ (медленнее)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>AI письмо</label>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:normal;color:var(--text)">
+              <input type="checkbox" id="af-useai"> Генерировать письма через ChatGPT
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:normal;color:var(--text)">
+              <input type="checkbox" id="af-force" checked> Прикреплять письмо всегда
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="form-row full" id="af-system-prompt-row">
+        <div class="form-group">
+          <label>Системный промпт для AI письма (опционально)</label>
+          <textarea id="af-sysprompt" rows="2" placeholder="Ты опытный специалист. Пиши кратко и персонализировано под вакансию..."></textarea>
+        </div>
+      </div>
+
+      <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+
+      <!-- Контроль -->
+      <div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:14px;text-transform:uppercase;letter-spacing:.05em">⚙️ Контроль</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Макс. откликов за сессию</label>
+          <input id="af-maxresp" type="number" value="100" min="1" max="1000" />
+        </div>
+        <div class="form-group">
+          <label>Задержка между откликами (сек)</label>
+          <input id="af-delay" value="1-3" placeholder="1-3" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Страниц поиска</label>
+          <input id="af-pages" type="number" value="10" min="1" max="50" />
+        </div>
+        <div class="form-group">
+          <label>Вакансий на странице</label>
+          <input id="af-perpage" type="number" value="20" min="5" max="100" />
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="af-skiptests" checked> Пропускать вакансии с тестами
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="af-onlysalary"> Только с указанной зарплатой
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="af-dryrun"> 🧪 Dry-run (без реальных откликов)
+        </label>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" style="font-size:15px;padding:10px 28px" onclick="submitApplyForm(false)">🚀 Запустить отклики</button>
+        <button class="btn btn-secondary" onclick="submitApplyForm(true)">🧪 Dry-run</button>
+      </div>
+
+      <div id="af-result" class="run-output" style="margin-top:16px"></div>
+    </div>
+    </div>`;
+}
+
+async function submitApplyForm(forceDryRun) {
+  const btn = document.querySelector('#content .btn-primary');
+  const out = document.getElementById('af-result');
+  out.style.display = 'block';
+  out.textContent = '⏳ Запускаю...';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Запускаю...'; }
+
+  const area = document.getElementById('af-area').value.trim()
+    .split(',').map(s=>s.trim()).filter(Boolean);
+
+  const schedule = [...document.querySelectorAll('.af-schedule:checked')].map(el=>el.value);
+  const employment = [...document.querySelectorAll('.af-employment:checked')].map(el=>el.value);
+
+  const payload = {
+    profile: currentProfile,
+    dry_run: forceDryRun || document.getElementById('af-dryrun').checked,
+    search: document.getElementById('af-search').value.trim(),
+    resume_id: document.getElementById('af-resume').value,
+    area,
+    experience: document.getElementById('af-exp').value,
+    salary: parseInt(document.getElementById('af-salary').value) || null,
+    only_with_salary: document.getElementById('af-onlysalary').checked,
+    schedule,
+    employment,
+    excluded_filter: document.getElementById('af-excluded').value.trim(),
+    ai_filter: document.getElementById('af-aifilter').value,
+    use_ai: document.getElementById('af-useai').checked,
+    force_message: document.getElementById('af-force').checked,
+    system_prompt: document.getElementById('af-sysprompt').value.trim(),
+    skip_tests: document.getElementById('af-skiptests').checked,
+    max_responses: parseInt(document.getElementById('af-maxresp').value) || 100,
+    response_delay: document.getElementById('af-delay').value.trim() || '1-3',
+    per_page: parseInt(document.getElementById('af-perpage').value) || 20,
+    total_pages: parseInt(document.getElementById('af-pages').value) || 10,
+  };
+
+  try {
+    const r = await fetch(`/api/run/apply-vacancies-full?profile=${encodeURIComponent(currentProfile)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    }).then(r => { if(!r.ok) return r.json().then(e=>{throw new Error(e.detail)}); return r.json(); });
+
+    out.textContent = `Операция запущена (ID: ${r.op_id})\n\nОтслеживаем результат...`;
+    toast('Отклики запущены в фоне!');
+    // Polling результата
+    pollOpResult(r.op_id, out);
+  } catch(e) {
+    out.textContent = 'Ошибка: ' + e.message;
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '🚀 Запустить отклики'; }
+  }
+}
+
+async function pollOpResult(opId, outEl) {
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    try {
+      const s = await fetch(`/api/operation-status/${opId}`).then(r=>r.json());
+      if (!s.running) {
+        const out = [s.stdout, s.stderr].filter(Boolean).join('\n--- STDERR ---\n');
+        outEl.textContent = out || '(нет вывода)';
+        if (s.returncode === 0) toast('Отклики завершены успешно!');
+        else toast(`Завершено с кодом ${s.returncode}`, 'error');
+        return;
+      }
+      outEl.textContent = `⏳ Работает... (${(i+1)*5}с)`;
+    } catch(e) { break; }
+  }
+  outEl.textContent += '\n\n⚠️ Таймаут ожидания. Проверьте логи.';
+}
+
+// ---------------------------------------------------------------------------
+// LETTER TEMPLATE — редактор шаблона письма
+// ---------------------------------------------------------------------------
+async function letterTemplate() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
+
+  try {
+    const r = await fetch('/api/letter-template').then(r=>r.json());
+    c.innerHTML = `
+      <div style="max-width:800px">
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;font-size:13px;color:var(--text2)">
+          <strong style="color:var(--text)">Синтаксис шаблона:</strong>
+          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(vacancy_name)s</code> — название вакансии</span>
+          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(first_name)s</code> — ваше имя</span>
+          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">{вар1|вар2}</code> — случайный вариант</span>
+        </div>
+        <div class="form-group" style="margin-bottom:14px">
+          <label>Содержимое letter.txt</label>
+          <textarea id="lt-content" rows="20" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:12px;font-size:13px;font-family:monospace;resize:vertical;outline:none;line-height:1.6">${r.content.replace(/</g,'&lt;')}</textarea>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-primary" onclick="saveLetterTemplate()">💾 Сохранить</button>
+          <button class="btn btn-secondary" onclick="letterTemplate()">↺ Отменить</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${e.message}</div>`;
+  }
+}
+
+async function saveLetterTemplate() {
+  const content = document.getElementById('lt-content')?.value;
+  if (content === undefined) return;
+  try {
+    const r = await fetch('/api/letter-template', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content}),
+    }).then(r => { if(!r.ok) return r.json().then(e=>{throw new Error(e.detail)}); return r.json(); });
+    toast(`Шаблон сохранён (${r.size} символов)`);
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 // ---------------------------------------------------------------------------

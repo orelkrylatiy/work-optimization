@@ -84,8 +84,16 @@ def _config_root() -> Path:
         return Path(env_config_dir)
 
     # Проверяем config/ в корне проекта (Docker legacy)
+    # Считаем папку "с данными" только если в ней есть config.json
+    # или подпапки с config.json (профили) — игнорируем .gitkeep и yaml-файлы
     local_config = PROJECT_ROOT / "config"
-    if local_config.exists() and any(local_config.iterdir()):
+    if local_config.exists() and (
+        (local_config / "config.json").exists()
+        or any(
+            d.is_dir() and (d / "config.json").exists()
+            for d in local_config.iterdir()
+        )
+    ):
         return local_config
 
     # Стандартный путь ОС

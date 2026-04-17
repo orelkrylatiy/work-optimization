@@ -195,12 +195,16 @@
   @media (max-width: 768px) {
     .sidebar { width: 60px; }
     .sidebar-logo { padding: 16px 8px; justify-content: center; }
-    .sidebar-logo span { display: none; }
+    /* скрываем только текстовые span, не иконки */
+    .sidebar-logo span:not(.logo-icon) { display: none; }
     .nav-item { gap: 0; padding: 9px 8px; justify-content: center; }
-    .nav-item span { display: none; }
-    .sidebar-profile { padding: 8px 8px; }
-    .profile-trigger { padding: 8px; width: 100%; }
+    .nav-item span:not(.icon) { display: none; }
+    .nav-item .icon { width: 20px; text-align: center; font-size: 18px; }
+    .sidebar-profile { padding: 8px; }
+    .profile-trigger { padding: 8px; width: 100%; justify-content: center; }
     .profile-trigger span:last-child { display: none; }
+    /* скрываем текст аккаунта, оставляем только эмодзи */
+    #profile-current-label { display: none; }
     .form-row { grid-template-columns: 1fr; }
   }
 </style>
@@ -810,6 +814,8 @@ function stateHtml(state) {
     rejection: ['rejection', 'Отклонено'],
     response: ['response', 'Отклик'],
     phone_interview: ['phone_interview', 'Тел. собес.'],
+    interview: ['phone_interview', 'Интервью'],
+    hired: ['invitation', 'Принят'],
   };
   const [cls, label] = map[state] || ['default', state];
   return `<span class="state state-${cls}">${label}</span>`;
@@ -1898,12 +1904,20 @@ async function genAiReply(negId, vacancyName, employerName) {
 async function clearRejections() {
   if (!confirm('Очистить все отказы из входящих?\nЭто скроет переписки со статусом "отказ".')) return;
   try {
-    // Dry-run сначала
-    const dry = await api(`/api/inbox/clear-rejections?dry_run=true`);
+    // Dry-run — узнаём сколько отказов (тоже POST, dry_run=true)
+    const dryResp = await fetch(
+      `/api/inbox/clear-rejections?profile=${encodeURIComponent(currentProfile)}&dry_run=true`,
+      { method: 'POST' }
+    );
+    if (!dryResp.ok) throw new Error((await dryResp.json()).detail);
+    const dry = await dryResp.json();
     if (!dry.total_discards) { toast('Отказов не найдено'); return; }
     if (!confirm(`Найдено ${dry.total_discards} отказов. Удалить?`)) return;
-    const r = await fetch(`/api/inbox/clear-rejections?profile=${encodeURIComponent(currentProfile)}`, {method:'POST'})
-      .then(r => r.json());
+    // Реальная очистка
+    const r = await fetch(
+      `/api/inbox/clear-rejections?profile=${encodeURIComponent(currentProfile)}`,
+      { method: 'POST' }
+    ).then(r => r.json());
     toast(`Удалено ${r.cleared} отказов`);
     inbox();
   } catch(e) { toast(e.message, 'error'); }

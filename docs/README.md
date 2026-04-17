@@ -1,23 +1,23 @@
-# Документация
+# Project Documentation
 
-## Основное
+This folder keeps long-form project notes out of the repository root.
 
-- `AUTHORIZATION_INIT.md` - авторизация и первичная настройка.
-- `DEVOPS.md` - запуск, Docker и окружение.
-- `DEVOPS_CHEATSHEET.md` - короткая DevOps-шпаргалка.
-- `READY_TO_RUN.md` - чеклист готовности.
-- `resume_template.md` - шаблон резюме.
+## User And Runtime Docs
 
-## Разработка
+- `AUTHORIZATION_INIT.md` - authorization flow and first-run behavior.
+- `DEVOPS.md` - environment, Docker, deployment, and service operations.
+- `DEVOPS_CHEATSHEET.md` - short DevOps command reference.
+- `resume_template.md` - resume template/example.
 
-- `development/LINTING.md` - линтеры и форматирование.
-- `development/LINTING_SETUP.md` - настройка линтеров.
-- `development/TESTING.md` - подход к тестированию.
-- `development/TESTS.md` - справочник по тестам.
+## Development Docs
 
-## Отчеты
+- `development/LINTING.md` - linting and formatting workflow.
+- `development/LINTING_SETUP.md` - linter setup details.
+- `development/TESTING.md` - testing approach.
+- `development/TESTS.md` - test suite reference.
 
-- `reports/IMPLEMENTATION_COMPLETE.md` - отчет о внедрении.
-- `reports/TEST_REPORT.md` - отчет по тестам.
-- `reports/SETUP_SUMMARY.txt` - текстовый отчет по настройке.
-- `reports/test_results.txt` - последний краткий результат тестов.
+## API Reference
+
+- `hhapi/openapi.yml` - HeadHunter API schema snapshot.
+
+Generated reports, one-time setup summaries, and temporary test-result files were removed from the tracked docs to keep this folder focused.

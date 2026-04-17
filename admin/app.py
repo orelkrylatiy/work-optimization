@@ -1105,6 +1105,335 @@ def get_operation_status(op_id: str):
 
 
 # ---------------------------------------------------------------------------
+# HH API proxy helper
+# ---------------------------------------------------------------------------
+
+import requests as _requests
+
+
+def _hh_request(profile: str, method: str, path: str, **kwargs) -> Any:
+    """Прямой запрос к HH API через сохранённый access_token."""
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        raise HTTPException(404, "config.json не найден")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    token = (cfg.get("token") or {}).get("access_token")
+    if not token:
+        raise HTTPException(
+            401,
+            "Нет access_token. Авторизуйтесь: python -m hh_applicant_tool auth"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": cfg.get("user_agent", constants.DESKTOP_USER_AGENT),
+        "X-HH-App-Active": "true",
+        "Accept": "application/json",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    resp = _requests.request(
+        method,
+        f"https://api.hh.ru{path}",
+        headers=headers,
+        timeout=15,
+        **kwargs,
+    )
+    if resp.status_code == 401:
+        raise HTTPException(
+            401,
+            "Токен устарел. Обновите: python -m hh_applicant_tool refresh-token"
+        )
+    if not resp.ok:
+        raise HTTPException(resp.status_code, f"HH API: {resp.text[:300]}")
+    if resp.status_code == 204:
+        return {}
+    return resp.json()
+
+
+def _hh_get(profile: str, path: str, params: dict | None = None) -> Any:
+    return _hh_request(profile, "GET", path, params=params or {})
+
+
+def _hh_post(profile: str, path: str, data: dict | None = None) -> Any:
+    return _hh_request(profile, "POST", path, json=data or {})
+
+
+def _hh_delete(profile: str, path: str) -> Any:
+    return _hh_request(profile, "DELETE", path)
+
+
+# ---------------------------------------------------------------------------
+# Routes: inbox (сообщения от работодателей)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/inbox")
+def get_inbox(
+    profile: str = Query("default"),
+    status: str = Query(""),      # active, archived, discard, invitation, etc.
+    page: int = Query(0),
+    per_page: int = Query(20),
+):
+    """Список переписок с работодателями напрямую из HH API."""
+    params: dict[str, Any] = {"page": page, "per_page": per_page}
+    if status:
+        params["status"] = status
+
+    data = _hh_get(profile, "/negotiations", params)
+    # Нормализуем поля для удобства фронтенда
+    items = []
+    for n in data.get("items", []):
+        vacancy = n.get("vacancy") or {}
+        employer = vacancy.get("employer") or {}
+        last_msg = (n.get("messages_url") or "")
+        items.append({
+            "id": n.get("id"),
+            "state": (n.get("state") or {}).get("id", ""),
+            "state_name": (n.get("state") or {}).get("name", ""),
+            "created_at": n.get("created_at"),
+            "updated_at": n.get("updated_at"),
+            "vacancy_id": vacancy.get("id"),
+            "vacancy_name": vacancy.get("name"),
+            "vacancy_url": vacancy.get("alternate_url"),
+            "employer_id": employer.get("id"),
+            "employer_name": employer.get("name"),
+            "employer_logo": (employer.get("logo_urls") or {}).get("90"),
+            "viewed_by_opponent": n.get("viewed_by_opponent"),
+            "has_updates": n.get("has_updates", False),
+            "messages_url": last_msg,
+        })
+    return {
+        "items": items,
+        "found": data.get("found", 0),
+        "page": data.get("page", 0),
+        "pages": data.get("pages", 0),
+        "per_page": data.get("per_page", per_page),
+    }
+
+
+@app.get("/api/inbox/{neg_id}/messages")
+def get_messages(neg_id: int, profile: str = Query("default")):
+    """Получить историю сообщений переписки."""
+    data = _hh_get(profile, f"/negotiations/{neg_id}/messages", {"per_page": 50})
+    messages = []
+    for m in data.get("items", []):
+        author = m.get("author") or {}
+        messages.append({
+            "id": m.get("id"),
+            "text": m.get("text", ""),
+            "created_at": m.get("created_at"),
+            "is_employer": author.get("participant_type") == "employer",
+            "author_name": author.get("name", ""),
+            "viewed": m.get("viewed_by_opponent", False),
+        })
+    return {"messages": messages, "found": data.get("found", 0)}
+
+
+class ReplyRequest(BaseModel):
+    message: str
+    use_ai: bool = False
+    profile: str = "default"
+    vacancy_name: str = ""
+    employer_name: str = ""
+
+
+@app.post("/api/inbox/{neg_id}/reply")
+def send_reply(neg_id: int, body: ReplyRequest):
+    """Отправить сообщение в переписку."""
+    text = body.message.strip()
+
+    if body.use_ai and not text:
+        # Генерируем ответ через AI
+        cfg_path = _config_path(body.profile)
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg = json.load(f)
+            openai_cfg = cfg.get("openai") or {}
+            api_key = openai_cfg.get("api_key")
+            if api_key:
+                import urllib.request
+                system = (
+                    "Ты помогаешь отвечать на сообщения от HR-специалистов в рамках поиска работы. "
+                    "Пиши вежливо, профессионально, кратко. Язык: русский."
+                )
+                user = f"Напиши вежливый ответ HR по вакансии «{body.vacancy_name}» от компании «{body.employer_name}»."
+                payload = json.dumps({
+                    "model": openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL),
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 300,
+                }).encode()
+                req = urllib.request.Request(
+                    f"{openai_cfg.get('base_url', constants.OPENAI_DEFAULT_BASE_URL).rstrip('/')}/chat/completions",
+                    data=payload,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    result = json.load(r)
+                text = result["choices"][0]["message"]["content"]
+
+    if not text:
+        raise HTTPException(400, "Сообщение не может быть пустым")
+
+    _hh_post(body.profile, f"/negotiations/{neg_id}/messages", {"message": text})
+    return {"ok": True, "sent": text}
+
+
+# ---------------------------------------------------------------------------
+# Routes: очистка отказов
+# ---------------------------------------------------------------------------
+
+@app.post("/api/inbox/clear-rejections")
+def clear_rejections(
+    profile: str = Query("default"),
+    dry_run: bool = Query(False),
+):
+    """Скрыть все переписки со статусом 'discard' (отказ)."""
+    data = _hh_get(profile, "/negotiations", {"status": "discard", "per_page": 50})
+    total = data.get("found", 0)
+    items = data.get("items", [])
+    cleared = []
+    errors = []
+
+    for n in items:
+        neg_id = n.get("id")
+        if not neg_id:
+            continue
+        if dry_run:
+            cleared.append(neg_id)
+            continue
+        try:
+            _hh_delete(profile, f"/negotiations/active/{neg_id}")
+            cleared.append(neg_id)
+        except HTTPException as e:
+            errors.append({"id": neg_id, "error": e.detail})
+
+    return {
+        "total_discards": total,
+        "cleared": len(cleared),
+        "cleared_ids": cleared,
+        "errors": errors,
+        "dry_run": dry_run,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes: шаблон письма (letter.txt)
+# ---------------------------------------------------------------------------
+
+LETTER_FILE = PROJECT_ROOT / "letter.txt"
+
+
+@app.get("/api/letter-template")
+def get_letter_template():
+    """Получить содержимое шаблона сопроводительного письма."""
+    if not LETTER_FILE.exists():
+        return {"content": "", "exists": False}
+    content = LETTER_FILE.read_text(encoding="utf-8", errors="replace")
+    return {"content": content, "exists": True}
+
+
+class LetterTemplateUpdate(BaseModel):
+    content: str
+
+
+@app.put("/api/letter-template")
+def update_letter_template(body: LetterTemplateUpdate):
+    """Сохранить шаблон письма."""
+    if len(body.content) > 50_000:
+        raise HTTPException(400, "Шаблон слишком большой (>50KB)")
+    LETTER_FILE.write_text(body.content, encoding="utf-8")
+    return {"ok": True, "size": len(body.content)}
+
+
+# ---------------------------------------------------------------------------
+# Routes: полная форма запуска откликов
+# ---------------------------------------------------------------------------
+
+class ApplyFullRequest(BaseModel):
+    profile: str = "default"
+    dry_run: bool = False
+    # Поиск
+    search: str = ""
+    resume_id: str = ""
+    # Фильтры
+    experience: str = ""          # noExperience / between1And3 / between3And6 / moreThan6
+    salary: int | None = None
+    only_with_salary: bool = False
+    schedule: list[str] = []      # fullDay, shift, flexible, remote, flyInFlyOut
+    employment: list[str] = []    # full, part, project, volunteer, probation
+    area: list[str] = []          # коды городов: "1" = Москва, "2" = СПб
+    excluded_filter: str = ""     # regex для исключения по названию
+    # AI
+    ai_filter: str = ""           # "" | "light" | "heavy"
+    use_ai: bool = False          # AI-генерация писем
+    system_prompt: str = ""
+    message_prompt: str = ""
+    # Письмо
+    force_message: bool = False   # всегда прикреплять письмо
+    # Тесты
+    skip_tests: bool = True
+    # Контроль
+    max_responses: int = 100
+    response_delay: str = "1-3"
+    per_page: int = 20
+    total_pages: int = 10
+    send_email: bool = False
+
+
+@app.post("/api/run/apply-vacancies-full")
+def run_apply_vacancies_full(body: ApplyFullRequest):
+    """Запустить автоотклики со всеми параметрами."""
+    args: list[str] = []
+
+    if body.dry_run:
+        args.append("--dry-run")
+    if body.search:
+        args += ["--search", body.search]
+    if body.resume_id:
+        args += ["--resume-id", body.resume_id]
+    if body.experience:
+        args += ["--experience", body.experience]
+    if body.salary is not None:
+        args += ["--salary", str(body.salary)]
+    if body.only_with_salary:
+        args.append("--only-with-salary")
+    for s in body.schedule:
+        args += ["--schedule", s]
+    for e in body.employment:
+        args += ["--employment", e]
+    for a in body.area:
+        args += ["--area", a]
+    if body.excluded_filter:
+        args += ["--excluded-filter", body.excluded_filter]
+    if body.ai_filter:
+        args += ["--ai-filter", body.ai_filter]
+    if body.use_ai:
+        args.append("--use-ai")
+    if body.system_prompt:
+        args += ["--system-prompt", body.system_prompt]
+    if body.message_prompt:
+        args += ["--message-prompt", body.message_prompt]
+    if body.force_message:
+        args.append("--force-message")
+    if body.skip_tests:
+        args.append("--skip-tests")
+    if body.send_email:
+        args.append("--send-email")
+    args += ["--max-responses", str(body.max_responses)]
+    args += ["--response-delay", body.response_delay]
+    args += ["--per-page", str(body.per_page)]
+    args += ["--total-pages", str(body.total_pages)]
+
+    req = RunRequest(profile=body.profile)
+    return _run_operation("apply-vacancies", req, extra=args)
+
+
+# ---------------------------------------------------------------------------
 # Dev entrypoint
 # ---------------------------------------------------------------------------
 

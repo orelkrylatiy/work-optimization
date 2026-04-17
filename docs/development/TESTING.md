@@ -1,4 +1,4 @@
-# Testing Guide
+﻿# Testing Guide
 
 ## Running Tests
 
@@ -86,13 +86,13 @@ Each test file contains multiple test classes:
 ```python
 class TestFeature:
     """Test specific feature."""
-    
+
     def test_basic_operation(self):
         """Test basic functionality."""
-        
+
     def test_edge_case(self):
         """Test edge case."""
-        
+
     def test_error_handling(self):
         """Test error handling."""
 ```
@@ -107,24 +107,24 @@ from hh_applicant_tool.module_path import function_or_class
 
 class TestFeatureName:
     """Test feature description."""
-    
+
     def test_basic_case(self):
         """Short description of what's tested."""
         # Arrange
         input_data = ...
         expected = ...
-        
+
         # Act
         result = function_or_class(input_data)
-        
+
         # Assert
         assert result == expected
-    
+
     def test_error_case(self):
         """Should handle errors."""
         with pytest.raises(ValueError):
             function_or_class(invalid_data)
-    
+
     def test_edge_case(self):
         """Should handle edge cases."""
         # Empty, None, extreme values, etc.
@@ -167,11 +167,11 @@ def test_with_patch():
 
 ### Current Coverage
 
-- ✅ Utils module: 150+ tests (date, string, config, json)
-- ✅ API module: 120+ tests (client, errors)
-- ✅ Storage module: 85+ tests (models, repositories)
-- 📋 Operations module: Placeholder tests
-- 📋 Main module: Placeholder tests
+- âœ… Utils module: 150+ tests (date, string, config, json)
+- âœ… API module: 120+ tests (client, errors)
+- âœ… Storage module: 85+ tests (models, repositories)
+- ðŸ“‹ Operations module: Placeholder tests
+- ðŸ“‹ Main module: Placeholder tests
 
 ### Coverage Goals
 
@@ -318,7 +318,7 @@ pytest tests/ --collect-only
 ```python
 @pytest.mark.parametrize("input,expected", [
     ("hello", "hello"),
-    ("hello world", "hello w…"),  # 10 char limit
+    ("hello world", "hello wâ€¦"),  # 10 char limit
     ("", ""),
     (None, None),  # Edge case
 ])

@@ -1,8 +1,8 @@
-# Test Coverage Documentation
+﻿# Test Coverage Documentation
 
 ## Overview
-**Total Test Files:** 16  
-**Total Test Cases:** 400+  
+**Total Test Files:** 16
+**Total Test Cases:** 400+
 **Coverage Focus:** Critical modules with boundary conditions
 
 ---
@@ -20,7 +20,7 @@
   - End of year dates
   - Unix epoch (1970-01-01)
   - Year 9999
-  - Timezone offset extremes (±12:00/-11:00)
+  - Timezone offset extremes (Â±12:00/-11:00)
   - Invalid dates/times
   - Malformed timezones
 
@@ -193,50 +193,50 @@ pytest tests/*edge_cases.py -v
 ## Edge Cases Covered
 
 ### Data Validation
-- ✅ Null/None/empty values
-- ✅ Extreme numeric values (0, negatives, 999999999)
-- ✅ Empty strings/lists/dicts
-- ✅ Very large collections (10000+ items)
+- âœ… Null/None/empty values
+- âœ… Extreme numeric values (0, negatives, 999999999)
+- âœ… Empty strings/lists/dicts
+- âœ… Very large collections (10000+ items)
 
 ### Encoding & Unicode
-- ✅ UTF-8, UTF-16, different BOM markers
-- ✅ Multi-byte characters (CJK, emoji)
-- ✅ Special escape sequences
-- ✅ Invalid byte sequences
+- âœ… UTF-8, UTF-16, different BOM markers
+- âœ… Multi-byte characters (CJK, emoji)
+- âœ… Special escape sequences
+- âœ… Invalid byte sequences
 
 ### Dates & Times
-- ✅ Leap years (Feb 29, 2024 etc)
-- ✅ Non-leap years (Feb 29, 2023)
-- ✅ Extreme dates (1970, 9999)
-- ✅ Timezone offsets (±12:00, UTC, etc)
-- ✅ Invalid dates (Feb 30, month 13)
+- âœ… Leap years (Feb 29, 2024 etc)
+- âœ… Non-leap years (Feb 29, 2023)
+- âœ… Extreme dates (1970, 9999)
+- âœ… Timezone offsets (Â±12:00, UTC, etc)
+- âœ… Invalid dates (Feb 30, month 13)
 
 ### File Operations
-- ✅ Permission errors (read-only)
-- ✅ Missing files/directories
-- ✅ Corrupted content
-- ✅ Concurrent access
-- ✅ File deletion between operations
-- ✅ Very large files (1MB+)
+- âœ… Permission errors (read-only)
+- âœ… Missing files/directories
+- âœ… Corrupted content
+- âœ… Concurrent access
+- âœ… File deletion between operations
+- âœ… Very large files (1MB+)
 
 ### Concurrency
-- ✅ Race conditions
-- ✅ Lock reentrance
-- ✅ Simultaneous read/write
-- ✅ Multiple thread contention
+- âœ… Race conditions
+- âœ… Lock reentrance
+- âœ… Simultaneous read/write
+- âœ… Multiple thread contention
 
 ### API/Network
-- ✅ All HTTP status codes (300, 301-308, 400, 403, 404, 429, 500, 502, 503)
-- ✅ Empty responses
-- ✅ Malformed JSON
-- ✅ Missing error fields
-- ✅ Unicode in error messages
+- âœ… All HTTP status codes (300, 301-308, 400, 403, 404, 429, 500, 502, 503)
+- âœ… Empty responses
+- âœ… Malformed JSON
+- âœ… Missing error fields
+- âœ… Unicode in error messages
 
 ### Nested Structures
-- ✅ Deep nesting (100+ levels)
-- ✅ Empty nested objects
-- ✅ Mixed types in nested data
-- ✅ Circular-like references
+- âœ… Deep nesting (100+ levels)
+- âœ… Empty nested objects
+- âœ… Mixed types in nested data
+- âœ… Circular-like references
 
 ---
 

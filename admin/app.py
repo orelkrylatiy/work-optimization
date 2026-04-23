@@ -957,9 +957,12 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
             env["CONFIG_DIR"] = str(_config_root())
             print(f"DEBUG: Starting operation {op_id}: {' '.join(cmd)}")
 
-            # Используем Popen чтобы можно было отменить процесс
+            # Используем Popen чтобы можно было отменить процесс.
+            # stdin=DEVNULL гарантирует что процесс не зависнет ожидая ввода —
+            # любая попытка читать stdin сразу получит EOF.
             process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1439,6 +1442,185 @@ def run_apply_vacancies_full(body: ApplyFullRequest):
 
     req = RunRequest(profile=body.profile)
     return _run_operation("apply-vacancies", req, extra=args)
+
+
+# ---------------------------------------------------------------------------
+# Routes: token status + agent-friendly operations
+# ---------------------------------------------------------------------------
+
+def _get_token_info(profile: str) -> dict:
+    """Возвращает состояние токена без сетевых запросов."""
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        return {"status": "no_config", "profile": profile}
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception as ex:
+        return {"status": "read_error", "error": str(ex), "profile": profile}
+
+    token = cfg.get("token") or {}
+    access_token = token.get("access_token")
+    refresh_token_val = token.get("refresh_token")
+    expires_at = token.get("access_expires_at")
+
+    if not access_token:
+        return {"status": "no_token", "profile": profile, "can_refresh": False}
+
+    now = time.time()
+    expires_in = None
+    expired = False
+    if expires_at:
+        expires_in = int(expires_at - now)
+        expired = expires_in <= 0
+
+    return {
+        "status": "expired" if expired else "ok",
+        "profile": profile,
+        "expired": expired,
+        "expires_in_seconds": expires_in,
+        "can_refresh": bool(refresh_token_val),
+        "has_access_token": bool(access_token),
+        "has_refresh_token": bool(refresh_token_val),
+    }
+
+
+def _refresh_token_sync(profile: str, timeout: int = 30) -> dict:
+    """Запускает refresh-token CLI и возвращает результат."""
+    cmd = _build_local_cli_cmd(["--profile-id", profile, "--no-auto-auth", "refresh-token"])
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["CONFIG_DIR"] = str(_config_root())
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "stdout": proc.stdout or "",
+            "stderr": proc.stderr or "",
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "refresh-token timeout", "returncode": -1}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex), "returncode": -1}
+
+
+@app.get("/api/token-status")
+def get_token_status(profile: str = Query("default")):
+    """
+    Быстрая проверка токена без сетевых запросов.
+    Возвращает: status (ok/expired/no_token/no_config), expires_in_seconds, can_refresh.
+    Использовать перед запуском операций чтобы знать нужен ли refresh или re-auth.
+    """
+    return _get_token_info(_validate_profile_name(profile))
+
+
+@app.get("/api/agent/preflight")
+def agent_preflight(profile: str = Query("default")):
+    """
+    Pre-flight проверка для AI агента: всё ли готово чтобы запускать операции?
+    Возвращает: ready (bool), нужен ли refresh, нужен ли full re-auth.
+    """
+    profile = _validate_profile_name(profile)
+    token = _get_token_info(profile)
+
+    cfg_path = _config_path(profile)
+    db = _db_path(profile)
+
+    return {
+        "ready": token["status"] == "ok",
+        "profile": profile,
+        "token_status": token["status"],       # ok / expired / no_token / no_config
+        "token_expires_in": token.get("expires_in_seconds"),
+        "can_refresh": token.get("can_refresh", False),
+        "needs_reauth": token["status"] in ("no_token", "no_config"),
+        "needs_refresh": token["status"] == "expired" and token.get("can_refresh", False),
+        "config_exists": cfg_path.exists(),
+        "db_exists": db.exists(),
+        "action": (
+            "run"           if token["status"] == "ok" else
+            "refresh"       if (token["status"] == "expired" and token.get("can_refresh")) else
+            "reauth"        # нужна ручная авторизация
+        ),
+    }
+
+
+class AgentRunRequest(BaseModel):
+    """
+    Запрос операции от AI агента.
+    Агент вызывает этот endpoint — панель сама:
+    1. Проверит токен
+    2. Обновит если истёк (и есть refresh_token)
+    3. Запустит операцию
+    4. Вернёт op_id для polling статуса
+    """
+    profile: str = "default"
+    operation: str = "apply-vacancies"   # apply-vacancies | update-resumes | refresh-token
+    auto_refresh: bool = True            # попробовать refresh-token если истёк
+    args: list[str] = Field(default_factory=list)   # дополнительные аргументы CLI
+
+
+@app.post("/api/agent/run")
+def agent_run(body: AgentRunRequest):
+    """
+    Единая точка входа для AI агента.
+    Агент не должен думать о токенах — всё обрабатывается автоматически.
+    """
+    profile = _validate_profile_name(body.profile)
+    allowed_ops = {"apply-vacancies", "update-resumes", "refresh-token"}
+    if body.operation not in allowed_ops:
+        raise HTTPException(400, f"Операция должна быть одной из: {', '.join(sorted(allowed_ops))}")
+
+    token = _get_token_info(profile)
+
+    # Если токен истёк и можно обновить — обновляем синхронно перед запуском
+    refreshed = False
+    if body.auto_refresh and token["status"] == "expired" and token.get("can_refresh"):
+        refresh_result = _refresh_token_sync(profile)
+        if refresh_result["ok"]:
+            refreshed = True
+            token = _get_token_info(profile)  # перечитать после refresh
+        else:
+            raise HTTPException(
+                502,
+                f"Не удалось обновить токен: {refresh_result.get('stderr', '')[:300]}. "
+                "Нужна ручная авторизация: запустите 'python -m hh_applicant_tool auth' в терминале."
+            )
+
+    # Если токена нет вообще — нужна ручная авторизация
+    if token["status"] in ("no_token", "no_config"):
+        raise HTTPException(
+            401,
+            "Нет токена авторизации. Нужна ручная авторизация: "
+            "запустите 'python -m hh_applicant_tool auth' в терминале. "
+            "Это единственное что нельзя автоматизировать — ввод SMS-кода."
+        )
+
+    if token["status"] == "expired":
+        raise HTTPException(
+            401,
+            "Токен истёк и нет refresh_token. "
+            "Нужна ручная авторизация: запустите 'python -m hh_applicant_tool auth' в терминале."
+        )
+
+    req = RunRequest(profile=profile, extra_args=body.args)
+    result = _run_operation(body.operation, req)
+    result["refreshed_token"] = refreshed
+    result["token_status"] = token["status"]
+    return result
 
 
 # ---------------------------------------------------------------------------

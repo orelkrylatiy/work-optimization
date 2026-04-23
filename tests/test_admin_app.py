@@ -206,3 +206,248 @@ def test_logout_clears_token_and_cookies(tmp_path, monkeypatch):
     saved_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert saved_config["token"] == {}
     assert not cookies_path.exists()
+
+
+def test_run_operation_uses_devnull_stdin(monkeypatch):
+    """Subprocess must never inherit stdin — use DEVNULL to prevent hangs."""
+    captured = {}
+
+    class FakeProcess:
+        pid = 42
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+        def poll(self):
+            return self.returncode
+
+    class SyncThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    def fake_popen(cmd, **kwargs):
+        captured["stdin"] = kwargs.get("stdin")
+        return FakeProcess()
+
+    monkeypatch.setattr(admin_app.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(admin_app.threading, "Thread", SyncThread)
+    admin_app.running_operations.clear()
+
+    admin_app._run_operation(
+        "update-resumes",
+        admin_app.RunRequest(profile="default"),
+    )
+
+    assert captured["stdin"] is admin_app.subprocess.DEVNULL, (
+        "stdin must be DEVNULL so the process never blocks waiting for user input"
+    )
+
+
+def test_token_status_no_config(tmp_path, monkeypatch):
+    """/api/token-status returns no_config when profile directory is absent."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+
+    response = client.get("/api/token-status?profile=ghost")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "no_config"
+
+
+def test_token_status_ok(tmp_path, monkeypatch):
+    """/api/token-status returns ok when a valid unexpired token is present."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tok-ok"})
+    cfg = tmp_path / "tok-ok" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "good-token",
+                "refresh_token": "ref",
+                "access_expires_at": time.time() + 3600,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/token-status?profile=tok-ok")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["can_refresh"] is True
+    assert data["expires_in_seconds"] > 0
+
+
+def test_token_status_expired(tmp_path, monkeypatch):
+    """/api/token-status returns expired when access_expires_at is in the past."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tok-exp"})
+    cfg = tmp_path / "tok-exp" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "stale-token",
+                "refresh_token": "ref",
+                "access_expires_at": 1000000,   # far in the past
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/token-status?profile=tok-exp")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "expired"
+    assert data["can_refresh"] is True
+
+
+def test_agent_preflight_no_token(tmp_path, monkeypatch):
+    """/api/agent/preflight reports needs_reauth when no token is present."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "new-agent"})
+
+    response = client.get("/api/agent/preflight?profile=new-agent")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ready"] is False
+    assert data["needs_reauth"] is True
+    assert data["action"] == "reauth"
+
+
+def test_agent_preflight_ready(tmp_path, monkeypatch):
+    """/api/agent/preflight returns ready=True when token is valid."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-ok"})
+    cfg = tmp_path / "agent-ok" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "live-token",
+                "refresh_token": "ref",
+                "access_expires_at": time.time() + 7200,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/agent/preflight?profile=agent-ok")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ready"] is True
+    assert data["action"] == "run"
+    assert data["needs_reauth"] is False
+    assert data["needs_refresh"] is False
+
+
+def test_agent_run_no_token_returns_401(tmp_path, monkeypatch):
+    """/api/agent/run should return 401 when there is no token at all."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-noauth"})
+
+    response = client.post(
+        "/api/agent/run",
+        json={"profile": "agent-noauth", "operation": "apply-vacancies"},
+    )
+
+    assert response.status_code == 401
+    assert "авторизаци" in response.json()["detail"].lower()
+
+
+def test_agent_run_expired_triggers_refresh(tmp_path, monkeypatch):
+    """/api/agent/run should auto-refresh expired token before running operation."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-ref"})
+    cfg = tmp_path / "agent-ref" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "old",
+                "refresh_token": "ref",
+                "access_expires_at": 1000,          # expired
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    refresh_calls = []
+    run_calls = []
+
+    def fake_refresh(profile, timeout=30):
+        refresh_calls.append(profile)
+        # Simulate successful refresh by updating the token in config
+        cfg.write_text(
+            json.dumps({
+                "token": {
+                    "access_token": "new",
+                    "refresh_token": "ref",
+                    "access_expires_at": time.time() + 7200,
+                }
+            }),
+            encoding="utf-8",
+        )
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    def fake_run_op(op, body, extra=None):
+        run_calls.append(op)
+        return {"op_id": "x1", "stdout": "started", "stderr": ""}
+
+    monkeypatch.setattr(admin_app, "_refresh_token_sync", fake_refresh)
+    monkeypatch.setattr(admin_app, "_run_operation", fake_run_op)
+
+    response = client.post(
+        "/api/agent/run",
+        json={"profile": "agent-ref", "operation": "update-resumes", "auto_refresh": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["refreshed_token"] is True
+    assert data["op_id"] == "x1"
+    assert refresh_calls == ["agent-ref"]
+    assert run_calls == ["update-resumes"]
+
+
+def test_agent_run_invalid_operation(tmp_path, monkeypatch):
+    """/api/agent/run rejects unknown operation names."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-bad"})
+    cfg = tmp_path / "agent-bad" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "tok",
+                "access_expires_at": time.time() + 3600,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/agent/run",
+        json={"profile": "agent-bad", "operation": "rm -rf /"},
+    )
+
+    assert response.status_code == 400

@@ -451,3 +451,190 @@ def test_agent_run_invalid_operation(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Letter templates
+# ---------------------------------------------------------------------------
+
+def test_seed_letter_templates(tmp_path, monkeypatch):
+    """/api/letter-templates/seed populates default templates in config."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-seed"})
+
+    resp = client.post("/api/letter-templates/seed?profile=tpl-seed")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert len(data["added"]) == len(admin_app.DEFAULT_LETTER_TEMPLATES)
+
+    cfg = json.loads((tmp_path / "tpl-seed" / "config.json").read_text(encoding="utf-8"))
+    assert "letter_templates" in cfg
+    assert "universal" in cfg["letter_templates"]
+
+
+def test_seed_does_not_overwrite_existing(tmp_path, monkeypatch):
+    """Seeding without overwrite=true should preserve user-edited templates."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-preserve"})
+
+    # Pre-seed with custom version of 'universal'
+    client.post(
+        "/api/letter-templates",
+        json={"profile": "tpl-preserve", "name": "universal", "content": "My custom text"},
+    )
+
+    # Re-seed without overwrite
+    client.post("/api/letter-templates/seed?profile=tpl-preserve&overwrite=false")
+
+    cfg = json.loads((tmp_path / "tpl-preserve" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["letter_templates"]["universal"] == "My custom text"
+
+
+def test_upsert_and_delete_letter_template(tmp_path, monkeypatch):
+    """Letter templates can be created, updated, and deleted via API."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-crud"})
+
+    # Create
+    resp = client.post(
+        "/api/letter-templates",
+        json={"profile": "tpl-crud", "name": "my-tpl", "content": "Hello %(first_name)s"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    # List
+    resp = client.get("/api/letter-templates?profile=tpl-crud")
+    assert resp.status_code == 200
+    assert "my-tpl" in resp.json()["templates"]
+
+    # Delete
+    resp = client.delete("/api/letter-templates/my-tpl?profile=tpl-crud")
+    assert resp.status_code == 200
+
+    cfg = json.loads((tmp_path / "tpl-crud" / "config.json").read_text(encoding="utf-8"))
+    assert "my-tpl" not in (cfg.get("letter_templates") or {})
+
+
+def test_resolve_letter_file_uses_template(tmp_path, monkeypatch):
+    """_resolve_letter_file writes template to tmp file and returns path."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-resolve"})
+    client.post(
+        "/api/letter-templates",
+        json={"profile": "tpl-resolve", "name": "hello", "content": "Hi %(first_name)s!"},
+    )
+
+    path = admin_app._resolve_letter_file("tpl-resolve", "hello")
+
+    assert path is not None
+    assert path.exists()
+    assert path.read_text(encoding="utf-8") == "Hi %(first_name)s!"
+
+
+def test_resolve_letter_file_falls_back_to_default(tmp_path, monkeypatch):
+    """_resolve_letter_file falls back to DEFAULT_LETTER_TEMPLATES if not in config."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-fallback"})
+
+    # 'universal' is in DEFAULT_LETTER_TEMPLATES but NOT in user config
+    path = admin_app._resolve_letter_file("tpl-fallback", "universal")
+
+    assert path is not None
+    assert path.exists()
+
+
+def test_apply_full_passes_letter_file_arg(tmp_path, monkeypatch):
+    """ApplyFullRequest with template_name resolves and passes --letter-file."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-apply"})
+    client.post(
+        "/api/letter-templates",
+        json={"profile": "tpl-apply", "name": "short", "content": "Short letter"},
+    )
+
+    body = admin_app.ApplyFullRequest(
+        profile="tpl-apply",
+        template_name="short",
+        force_message=True,
+    )
+    args = admin_app._build_apply_args(body)
+
+    assert "--letter-file" in args
+    letter_path_idx = args.index("--letter-file") + 1
+    assert args[letter_path_idx].endswith("_letter_tmp.txt")
+
+
+def test_apply_full_uses_improved_system_prompt(tmp_path, monkeypatch):
+    """ApplyFullRequest with use_ai=True injects DEFAULT_SYSTEM_PROMPT if none given."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "tpl-ai-prompt"})
+
+    body = admin_app.ApplyFullRequest(
+        profile="tpl-ai-prompt",
+        use_ai=True,
+        force_message=True,
+    )
+    args = admin_app._build_apply_args(body)
+
+    assert "--system-prompt" in args
+    sp_idx = args.index("--system-prompt") + 1
+    assert args[sp_idx] == admin_app.DEFAULT_SYSTEM_PROMPT
+
+
+def test_agent_run_with_apply_params(tmp_path, monkeypatch):
+    """/api/agent/run with apply_params should build and pass correct CLI args."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-params"})
+    cfg = tmp_path / "agent-params" / "config.json"
+    cfg.write_text(
+        json.dumps({
+            "token": {
+                "access_token": "live",
+                "access_expires_at": time.time() + 3600,
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    run_calls = []
+
+    def fake_run_op(op, req_body, extra=None):
+        # apply_params args are passed via req_body.extra_args, not extra
+        combined = list(extra or []) + list(req_body.extra_args or [])
+        run_calls.append({"op": op, "extra": combined})
+        return {"op_id": "p1", "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(admin_app, "_run_operation", fake_run_op)
+
+    resp = client.post("/api/agent/run", json={
+        "profile": "agent-params",
+        "operation": "apply-vacancies",
+        "apply_params": {
+            "profile": "agent-params",
+            "search": "Python",
+            "use_ai": True,
+            "force_message": True,
+            "skip_tests": True,
+        }
+    })
+
+    assert resp.status_code == 200
+    assert run_calls[0]["op"] == "apply-vacancies"
+    extra = run_calls[0]["extra"]
+    assert "--search" in extra
+    assert "Python" in extra
+    assert "--use-ai" in extra
+    assert "--force-message" in extra

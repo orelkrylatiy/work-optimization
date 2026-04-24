@@ -11,7 +11,8 @@
 | Задача | Возможно? | Примечание |
 |---|---|---|
 | Запустить рассылку откликов | ✅ | Через `/api/agent/run` |
-| Отправить сопроводительное письмо | ✅ | AI генерирует через OpenAI |
+| Отправить сопроводительное письмо (AI) | ✅ | OpenAI генерирует под каждую вакансию |
+| Отправить письмо по шаблону | ✅ | 5 встроенных шаблонов + свои |
 | Обновить резюме | ✅ | Поднимает в поиске |
 | Проверить и ответить на сообщения | ✅ | Через `/api/inbox` |
 | Обновить токен (refresh) | ✅ | Автоматически при истечении |
@@ -23,27 +24,39 @@
 
 ## Шаг 0 — Первичная авторизация (один раз, руками)
 
-Выполняется один раз при настройке аккаунта:
-
 ```bash
 python -m hh_applicant_tool auth
 # Откроется браузер → войти на hh.ru → ввести SMS-код
-# После этого токен сохраняется и агент не нужна помощь
+# Токен сохраняется — дальше агент работает сам
 ```
 
 После этого шага агент сам обновляет токен через `refresh_token` при необходимости.
 
 ---
 
-## Шаг 1 — Pre-flight проверка (всегда перед операцией)
+## Шаг 0.5 — Первоначальная настройка шаблонов (один раз)
 
-Перед любой операцией агент обязан проверить готовность:
+Заполнить библиотеку шаблонов писем встроенными заготовками:
+
+```
+POST /api/letter-templates/seed?profile=default
+```
+
+Ответ:
+```json
+{ "ok": true, "added": ["universal", "short", "motivated", "remote", "experienced"], "total": 5 }
+```
+
+Это нужно сделать один раз. Шаблоны сохраняются в `config.json` профиля и доступны при каждом запуске откликов.
+
+---
+
+## Шаг 1 — Pre-flight проверка (всегда перед операцией)
 
 ```
 GET /api/agent/preflight?profile=default
 ```
 
-Ответ:
 ```json
 {
   "ready": true,
@@ -61,14 +74,16 @@ GET /api/agent/preflight?profile=default
 | `action` | Что сделать |
 |---|---|
 | `run` | Запускать операцию немедленно |
-| `refresh` | Токен истёк, нужен refresh (агент справится сам через `/api/agent/run` с `auto_refresh: true`) |
-| `reauth` | Нет токена → уведомить человека, самому не продолжать |
+| `refresh` | Токен истёк — запустить `/api/agent/run` с `auto_refresh: true`, он обновит сам |
+| `reauth` | Нет токена → уведомить человека, не продолжать |
 
 ---
 
 ## Шаг 2 — Запуск откликов с сопроводительными письмами
 
-### Простой запуск (рекомендуется)
+Используй `apply_params` внутри `/api/agent/run` — так удобнее чем собирать `args` вручную.
+
+### Вариант A — AI письмо (если есть OpenAI API key, лучшая конверсия)
 
 ```
 POST /api/agent/run
@@ -79,88 +94,88 @@ POST /api/agent/run
   "profile": "default",
   "operation": "apply-vacancies",
   "auto_refresh": true,
-  "args": [
-    "--search", "Python разработчик",
-    "--force-message",
-    "--use-ai",
-    "--ai-filter", "light",
-    "--skip-tests",
-    "--max-responses", "50",
-    "--response-delay", "2-5"
-  ]
+  "apply_params": {
+    "search": "Python разработчик",
+    "use_ai": true,
+    "force_message": true,
+    "ai_filter": "light",
+    "skip_tests": true,
+    "max_responses": 50,
+    "response_delay": "2-5",
+    "schedule": ["remote"],
+    "experience": "between3And6"
+  }
 }
 ```
 
-**Ключевые параметры для максимальной конверсии:**
+AI сгенерирует уникальное письмо для каждой вакансии — персонализировано под название и работодателя.
 
-| Параметр | Значение | Смысл |
-|---|---|---|
-| `--force-message` | флаг | Всегда прикреплять сопроводительное письмо |
-| `--use-ai` | флаг | Генерировать письмо через OpenAI под каждую вакансию |
-| `--ai-filter light` | строка | AI отсеивает явно неподходящие вакансии |
-| `--skip-tests` | флаг | Пропускать вакансии с тестовыми заданиями |
-| `--response-delay 2-5` | строка | Случайная пауза 2–5 сек между откликами (защита от бана) |
-| `--max-responses 50` | число | Ограничение за один прогон |
-
-### Расширенный запуск (с фильтрами)
+### Вариант B — Шаблон (без OpenAI)
 
 ```json
 {
   "profile": "default",
   "operation": "apply-vacancies",
   "auto_refresh": true,
-  "args": [
-    "--search", "Backend developer",
-    "--experience", "between3And6",
-    "--schedule", "remote",
-    "--salary", "150000",
-    "--only-with-salary",
-    "--force-message",
-    "--use-ai",
-    "--ai-filter", "heavy",
-    "--skip-tests",
-    "--max-responses", "30",
-    "--response-delay", "3-7",
-    "--area", "1",
-    "--area", "2"
-  ]
+  "apply_params": {
+    "search": "Backend developer",
+    "template_name": "motivated",
+    "force_message": true,
+    "skip_tests": true,
+    "max_responses": 50,
+    "response_delay": "2-4"
+  }
 }
 ```
 
-Значения для `--experience`: `noExperience`, `between1And3`, `between3And6`, `moreThan6`  
-Значения для `--schedule`: `remote`, `fullDay`, `flexible`, `shift`  
-Коды `--area`: `1` = Москва, `2` = Санкт-Петербург
+Доступные встроенные шаблоны: `universal`, `short`, `motivated`, `remote`, `experienced`.
 
-### Ответ и ожидание результата
+Шаблоны используют синтаксис `{вариант1|вариант2}` для рандомизации и плейсхолдеры:
+- `%(first_name)s` — имя кандидата
+- `%(last_name)s` — фамилия
+- `%(vacancy_name)s` — название вакансии
+- `%(employer_name)s` — компания
+- `%(resume_title)s` — название резюме
+
+### Параметры поиска (`apply_params`)
+
+| Поле | Тип | Пример | Описание |
+|---|---|---|---|
+| `search` | str | `"Python"` | Строка поиска |
+| `use_ai` | bool | `true` | AI-генерация письма под каждую вакансию |
+| `template_name` | str | `"short"` | Шаблон письма (если не use_ai) |
+| `force_message` | bool | `true` | Всегда прикреплять письмо |
+| `ai_filter` | str | `"light"` | Фильтровать вакансии через AI (`light`/`heavy`) |
+| `skip_tests` | bool | `true` | Пропускать вакансии с тестами |
+| `max_responses` | int | `50` | Макс откликов за прогон |
+| `response_delay` | str | `"2-5"` | Задержка между откликами в сек |
+| `experience` | str | `"between3And6"` | Опыт (noExperience/between1And3/between3And6/moreThan6) |
+| `schedule` | list | `["remote"]` | Тип занятости (remote/fullDay/flexible) |
+| `employment` | list | `["full"]` | Формат (full/part/project) |
+| `area` | list | `["1","2"]` | Регионы (1=Москва, 2=СПб) |
+| `salary` | int | `150000` | Минимальная зарплата |
+| `only_with_salary` | bool | `true` | Только вакансии с указанной зарплатой |
+| `excluded_filter` | str | `"junior\|стажир"` | Regex исключения по названию |
+| `dry_run` | bool | `true` | Тестовый режим без отправки |
+
+### Получение op_id и ожидание результата
 
 ```json
-{
-  "op_id": "a3f2c1b0",
-  "stdout": "Операция запущена в фоне...",
-  "refreshed_token": false,
-  "token_status": "ok"
-}
+{ "op_id": "a3f2c1b0", "refreshed_token": false, "token_status": "ok" }
 ```
 
-Далее агент опрашивает статус каждые 10–15 секунд:
+Опрашивать каждые 10–15 секунд:
 
 ```
 GET /api/operation-status/a3f2c1b0
 ```
 
-Пока работает:
-```json
-{ "op_id": "a3f2c1b0", "running": true, "pid": 12345 }
-```
-
-После завершения:
+Завершено:
 ```json
 {
-  "op_id": "a3f2c1b0",
   "running": false,
   "returncode": 0,
-  "stdout": "✅️ Закончили рассылку откликов для резюме: Python разработчик\n...",
-  "stderr": ""
+  "stdout": "✅️ Закончили рассылку откликов для резюме: Python разработчик\n..."
 }
 ```
 
@@ -171,30 +186,25 @@ GET /api/operation-status/a3f2c1b0
 ```
 POST /api/agent/run
 ```
-
 ```json
-{
-  "profile": "default",
-  "operation": "update-resumes",
-  "auto_refresh": true
-}
+{ "profile": "default", "operation": "update-resumes", "auto_refresh": true }
 ```
 
-Рекомендуется запускать раз в 4 часа (резюме поднимается в поиске).
+Рекомендуется запускать раз в 4 часа.
 
 ---
 
 ## Шаг 4 — Итеративная работа с входящими сообщениями
 
-Это **ключевая задача для регулярного запуска** (раз в 15–30 минут). Работодатели отвечают в разное время, поэтому нужен цикл.
+Это задача для регулярного запуска (каждые 15–30 минут). Работодатели отвечают в разное время.
 
 ### 4.1 — Получить список переписок
 
 ```
-GET /api/inbox?profile=default&per_page=20
+GET /api/inbox?profile=default&per_page=50
 ```
 
-Фильтры статуса: `active`, `invitation` (приглашение), `phone_interview`, `discard` (отказ)
+Смотреть на поле `has_updates: true` — это переписки с новыми сообщениями от работодателей.
 
 ```json
 {
@@ -205,15 +215,13 @@ GET /api/inbox?profile=default&per_page=20
       "state_name": "Активный отклик",
       "vacancy_name": "Python разработчик",
       "employer_name": "ООО Рога и Копыта",
-      "has_updates": true,
-      "viewed_by_opponent": true
+      "has_updates": true
     }
-  ],
-  "found": 12
+  ]
 }
 ```
 
-### 4.2 — Читать сообщения переписки где `has_updates: true`
+### 4.2 — Читать сообщения переписки
 
 ```
 GET /api/inbox/123456/messages?profile=default
@@ -222,30 +230,19 @@ GET /api/inbox/123456/messages?profile=default
 ```json
 {
   "messages": [
-    {
-      "id": 789,
-      "text": "Здравствуйте! Хотели бы пригласить вас на собеседование...",
-      "created_at": "2025-04-24T10:30:00",
-      "is_employer": true,
-      "author_name": "Мария Иванова"
-    },
-    {
-      "id": 788,
-      "text": "Добрый день! Направляю резюме...",
-      "is_employer": false
-    }
+    { "id": 789, "text": "Приглашаем на собеседование...", "is_employer": true, "created_at": "2025-04-25T10:00:00" },
+    { "id": 788, "text": "Здравствуйте! Направляю резюме...", "is_employer": false }
   ]
 }
 ```
 
-### 4.3 — Отправить ответ (AI или вручную)
+Нужно отвечать если: последнее сообщение `is_employer: true` и мы ещё не ответили после него.
 
-**Вариант A — AI генерирует ответ:**
+### 4.3 — Отправить AI-ответ
 
 ```
 POST /api/inbox/123456/reply
 ```
-
 ```json
 {
   "profile": "default",
@@ -256,147 +253,174 @@ POST /api/inbox/123456/reply
 }
 ```
 
-**Вариант B — конкретный текст:**
+AI напишет вежливый профессиональный ответ. Или можно передать конкретный текст в `message`.
 
-```json
-{
-  "profile": "default",
-  "message": "Здравствуйте! Спасибо за приглашение. Готов обсудить детали — когда вам удобно?"
-}
-```
+### 4.4 — Очистить отказы
 
-### 4.4 — Алгоритм итеративного обхода (псевдокод)
+Если накопилось много отказов:
 
 ```
-каждые 20-30 минут:
-  1. GET /api/agent/preflight → проверить токен
-  2. GET /api/inbox?profile=default&per_page=50
+POST /api/inbox/clear-rejections?profile=default&dry_run=true
+```
+Сначала `dry_run=true` — посмотреть сколько будет удалено, потом без `dry_run`.
+
+### 4.5 — Алгоритм цикла (псевдокод)
+
+```
+каждые 20 минут:
+  1. GET /api/agent/preflight  →  если action != "run": пропустить
+  2. GET /api/inbox?per_page=50
   3. для каждого item где has_updates == true:
-       a. GET /api/inbox/{id}/messages
-       b. найти последнее сообщение от работодателя (is_employer=true)
-       c. если оно новее последнего ответа нашего (is_employer=false):
-            POST /api/inbox/{id}/reply { use_ai: true, ... }
-  4. GET /api/inbox?status=discard — если много отказов:
-       POST /api/inbox/clear-rejections → убрать из активных
+       msgs = GET /api/inbox/{id}/messages
+       последнее = msgs[-1]
+       если последнее.is_employer == true:
+           POST /api/inbox/{id}/reply { use_ai: true, vacancy_name: ..., employer_name: ... }
+  4. раз в час: GET /api/inbox?status=discard
+       если items.len > 5:
+           POST /api/inbox/clear-rejections?dry_run=false
 ```
 
 ---
 
-## Шаг 5 — Управление токеном
+## Управление шаблонами писем
 
-### Проверка без сетевых запросов
+### Посмотреть все шаблоны
+
+```
+GET /api/letter-templates?profile=default
+```
+
+Возвращает пользовательские + встроенные (`default_templates`).
+
+### Создать свой шаблон
+
+```
+POST /api/letter-templates
+```
+```json
+{
+  "profile": "default",
+  "name": "my-template",
+  "content": "Здравствуйте! Откликаюсь на вакансию «%(vacancy_name)s».\n\nМой опыт хорошо подходит для этой позиции.\n\nС уважением, %(first_name)s"
+}
+```
+
+### Удалить шаблон
+
+```
+DELETE /api/letter-templates/my-template?profile=default
+```
+
+### Заполнить встроенными (при первом запуске)
+
+```
+POST /api/letter-templates/seed?profile=default
+```
+
+---
+
+## Статус токена
 
 ```
 GET /api/token-status?profile=default
 ```
 
-```json
-{
-  "status": "ok",
-  "expires_in_seconds": 85200,
-  "can_refresh": true,
-  "has_refresh_token": true
-}
-```
-
-Статусы: `ok`, `expired`, `no_token`, `no_config`
-
-### Если `status == "expired"` — обновить вручную
-
-```
-POST /api/agent/run
-{ "profile": "default", "operation": "refresh-token", "auto_refresh": false }
-```
-
-Или просто запустить любую операцию с `auto_refresh: true` — панель обновит токен автоматически.
-
-### Если `status == "no_token"` — нужен человек
-
-Агент должен остановиться и уведомить: *"Требуется авторизация. Запустите `python -m hh_applicant_tool auth` в терминале."*
+| `status` | Значение | Действие |
+|---|---|---|
+| `ok` | Токен действителен | Запускать |
+| `expired` + `can_refresh: true` | Истёк, но есть refresh | Запустить с `auto_refresh: true` |
+| `expired` + `can_refresh: false` | Нет refresh_token | Уведомить человека |
+| `no_token` | Не авторизован | Уведомить человека |
+| `no_config` | Профиль не существует | Создать профиль |
 
 ---
 
-## Полный рабочий цикл агента (рекомендуемый)
+## Полный рабочий цикл (рекомендуется)
 
 ```
+[при запуске — один раз]
+  POST /api/letter-templates/seed?profile=default
+
 [каждые 4 часа]
-  1. preflight → ok?
-  2. update-resumes (поднять резюме)
-  3. apply-vacancies --force-message --use-ai (новые отклики)
+  GET  /api/agent/preflight → action == "run"?
+  POST /api/agent/run { operation: "update-resumes" }
+  POST /api/agent/run { operation: "apply-vacancies", apply_params: { use_ai: true, force_message: true, ... } }
 
 [каждые 20-30 минут]
-  1. preflight → ok?
-  2. проверить inbox на новые сообщения
-  3. ответить на сообщения от работодателей через AI
-  4. если много отказов — clear-rejections
-
-[при получении invitation/phone_interview]
-  → ответить немедленно, зафиксировать
+  GET  /api/agent/preflight → action == "run"?
+  GET  /api/inbox → ответить на has_updates=true
+  убрать отказы если накопились
 ```
 
 ---
 
-## Работа с несколькими профилями
+## Несколько профилей (аккаунтов)
 
-Все endpoint-ы принимают `?profile=<name>` или поле `profile` в теле.
+Все endpoint-ы принимают `?profile=<name>`:
 
 ```
 GET /api/profiles
 → { "profiles": ["default", "senior-dev", "freelance"] }
 ```
 
-Для каждого профиля — отдельный токен, база данных, настройки. Операции выполняются независимо.
+Для каждого профиля — отдельный токен, база данных, шаблоны писем.
 
 ---
 
 ## Обработка ошибок
 
-| HTTP код | Причина | Действие агента |
+| HTTP код | Причина | Действие |
 |---|---|---|
-| `401` | Нет токена или истёк без refresh | Уведомить человека о необходимости авторизации |
+| `401` | Нет токена или истёк | Уведомить человека об авторизации |
 | `400` | Неверные параметры | Исправить запрос |
-| `502` | Не удалось обновить токен | То же — уведомить человека |
-| `504` | Таймаут операции | Повторить позже |
-| `returncode != 0` в operation-status | Ошибка CLI | Проверить `stderr` для диагностики |
+| `502` | refresh-token не удался | Уведомить человека |
+| `404` | op_id или профиль не найден | Проверить правильность id |
+| `returncode != 0` | Ошибка CLI | Читать `stderr` для диагностики |
 
 ---
 
-## Настройка OpenAI для писем и ответов
+## Настройка OpenAI (для AI-писем и ответов)
 
-Чтобы AI генерировал сопроводительные письма и ответы, в `config.json` профиля должно быть:
-
+```
+PUT /api/config?profile=default
+```
 ```json
 {
-  "openai": {
-    "api_key": "sk-...",
-    "model": "gpt-4o-mini",
-    "base_url": "https://api.openai.com/v1"
+  "data": {
+    "openai": {
+      "api_key": "sk-...",
+      "model": "gpt-4o-mini",
+      "base_url": "https://api.openai.com/v1"
+    }
   }
 }
 ```
 
-Обновить через API:
-
-```
-PUT /api/config?profile=default
-{ "data": { "openai": { "api_key": "sk-...", "model": "gpt-4o-mini" } } }
-```
-
-Поддерживаются любые OpenAI-совместимые API (LM Studio, Ollama с OpenAI-proxy, Together AI и т.д.).
+Поддерживаются любые OpenAI-совместимые API: OpenRouter, LM Studio, Together AI и др.
 
 ---
 
-## Быстрая сводка endpoint-ов для агента
+## Справка по endpoint-ам
 
 ```
-GET  /api/agent/preflight?profile=   # проверить готовность
-POST /api/agent/run                  # запустить операцию
-GET  /api/token-status?profile=      # статус токена
-GET  /api/operation-status/{op_id}   # статус фоновой операции
-GET  /api/inbox?profile=             # список переписок
-GET  /api/inbox/{id}/messages        # сообщения переписки
-POST /api/inbox/{id}/reply           # отправить ответ
-POST /api/inbox/clear-rejections     # убрать отказы
-GET  /api/profiles                   # список профилей
-GET  /api/stats?profile=             # статистика откликов
+GET  /api/agent/preflight?profile=    # проверить готовность перед операцией
+POST /api/agent/run                   # запустить операцию (основной endpoint)
+GET  /api/token-status?profile=       # статус токена (offline, без запросов к HH)
+GET  /api/operation-status/{op_id}    # статус фоновой операции
+
+GET  /api/inbox?profile=              # список переписок
+GET  /api/inbox/{id}/messages         # история сообщений
+POST /api/inbox/{id}/reply            # отправить ответ
+POST /api/inbox/clear-rejections      # скрыть отказы
+
+GET  /api/letter-templates?profile=   # список шаблонов писем
+POST /api/letter-templates            # создать/обновить шаблон
+DELETE /api/letter-templates/{name}   # удалить шаблон
+POST /api/letter-templates/seed       # заполнить встроенными шаблонами
+
+GET  /api/profiles                    # список профилей
+POST /api/profiles                    # создать профиль
+GET  /api/stats?profile=              # статистика откликов
+PUT  /api/config?profile=             # обновить настройки
+GET  /api/logs?profile=               # просмотр логов
 ```

@@ -634,6 +634,52 @@ class AdminConfigModel(BaseModel):
     proxy_url: str | None = None
     email_settings: dict[str, Any] | None = None
     openai: OpenAIConfigModel | dict[str, Any] | None = None
+    letter_templates: dict[str, str] | None = None   # именованные шаблоны писем
+
+
+# Встроенные шаблоны — будут добавлены при первом вызове /api/letter-templates/seed
+DEFAULT_LETTER_TEMPLATES: dict[str, str] = {
+    "universal": (
+        "{Здравствуйте|Добрый день}!\n\n"
+        "Меня зовут %(first_name)s, и я {хотел бы|хочу} откликнуться на вакансию «%(vacancy_name)s» в компании %(employer_name)s.\n\n"
+        "Я внимательно ознакомился с требованиями и уверен, что мой опыт {соответствует|совпадает с} вашим ожиданиям. "
+        "{Готов|Буду рад} {рассказать подробнее|обсудить детали} на собеседовании.\n\n"
+        "С уважением, %(first_name)s %(last_name)s"
+    ),
+    "short": (
+        "{Здравствуйте|Добрый день}! "
+        "Откликаюсь на вакансию «%(vacancy_name)s». "
+        "{Уверен, что|Считаю, что} мой опыт будет полезен вашей команде. "
+        "Готов к {обсуждению деталей|собеседованию} в {удобное для вас время|любое время}."
+    ),
+    "motivated": (
+        "{Здравствуйте|Добрый день}, команда %(employer_name)s!\n\n"
+        "Вакансия «%(vacancy_name)s» сразу привлекла моё внимание — "
+        "{она точно совпадает с моим опытом|требования совпадают с моими компетенциями}. "
+        "В резюме «%(resume_title)s» подробно описан мой путь, но если коротко: "
+        "я {умею решать задачи системно|нацелен на результат} и {быстро вхожу в контекст|легко адаптируюсь}.\n\n"
+        "Буду рад {познакомиться с командой|пообщаться} и рассказать о своём опыте подробнее.\n\n"
+        "С уважением, %(first_name)s"
+    ),
+    "remote": (
+        "{Здравствуйте|Добрый день}!\n\n"
+        "Откликаюсь на вакансию «%(vacancy_name)s». "
+        "Я {успешно работаю|работаю} в удалённом формате {уже несколько лет|давно} — "
+        "умею {самостоятельно организовывать работу|эффективно работать без офиса}, "
+        "{соблюдать дедлайны|не срывать сроки} и {поддерживать связь с командой|быть на связи}.\n\n"
+        "Готов приступить {в ближайшее время|сразу после согласования}.\n\n"
+        "С уважением, %(first_name)s %(last_name)s"
+    ),
+    "experienced": (
+        "{Здравствуйте|Добрый день}!\n\n"
+        "Рассматриваю вакансию «%(vacancy_name)s» в %(employer_name)s как {интересную|привлекательную} возможность. "
+        "За {годы практики|время работы} я {накопил|приобрёл} опыт, который {напрямую|точно} "
+        "соответствует вашим требованиям.\n\n"
+        "Подробности — в резюме «%(resume_title)s». "
+        "{Буду рад|С удовольствием} {обсудить детали|познакомиться} при {созвоне|собеседовании}.\n\n"
+        "%(first_name)s %(last_name)s"
+    ),
+}
 
 
 def _load_and_validate_config(cfg_path: Path) -> dict[str, Any]:
@@ -655,7 +701,7 @@ def update_config(body: ConfigUpdate, profile: str = Query("default")):
         raise HTTPException(400, f"Некорректный config.json: {ex}") from ex
 
     # Запрещаем перезаписывать токены через API
-    safe_keys = {"api_delay", "openai", "email_settings", "proxy_url"}
+    safe_keys = {"api_delay", "openai", "email_settings", "proxy_url", "letter_templates"}
     for k, v in body.data.items():
         if k in safe_keys:
             if isinstance(v, dict) and isinstance(current.get(k), dict):
@@ -1333,6 +1379,115 @@ def clear_rejections(
 
 
 # ---------------------------------------------------------------------------
+# Routes: именованные шаблоны писем (хранятся в config.json → letter_templates)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/letter-templates")
+def list_letter_templates(profile: str = Query("default")):
+    """Список всех шаблонов писем для профиля."""
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        return {"templates": {}, "default_templates": DEFAULT_LETTER_TEMPLATES}
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    return {
+        "templates": cfg.get("letter_templates") or {},
+        "default_templates": DEFAULT_LETTER_TEMPLATES,
+    }
+
+
+class LetterTemplateUpsert(BaseModel):
+    name: str
+    content: str
+    profile: str = "default"
+
+
+@app.post("/api/letter-templates")
+def upsert_letter_template(body: LetterTemplateUpsert):
+    """Создать или обновить именованный шаблон письма."""
+    name = body.name.strip()
+    if not name or not re.match(r"^[A-Za-z0-9_-]{1,64}$", name):
+        raise HTTPException(400, "Имя шаблона: только буквы, цифры, _ и - (1-64 символа)")
+    if len(body.content) > 10_000:
+        raise HTTPException(400, "Шаблон слишком большой (>10KB)")
+    cfg_path = _config_path(body.profile)
+    if not cfg_path.exists():
+        raise HTTPException(404, "Профиль не найден")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    templates = cfg.get("letter_templates") or {}
+    templates[name] = body.content
+    cfg["letter_templates"] = templates
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    return {"ok": True, "name": name}
+
+
+@app.delete("/api/letter-templates/{name}")
+def delete_letter_template(name: str, profile: str = Query("default")):
+    """Удалить шаблон письма."""
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        raise HTTPException(404, "Профиль не найден")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    templates = cfg.get("letter_templates") or {}
+    if name not in templates:
+        raise HTTPException(404, f"Шаблон '{name}' не найден")
+    del templates[name]
+    cfg["letter_templates"] = templates
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    return {"ok": True}
+
+
+@app.post("/api/letter-templates/seed")
+def seed_letter_templates(profile: str = Query("default"), overwrite: bool = Query(False)):
+    """
+    Заполнить шаблоны встроенными заготовками.
+    По умолчанию не перезаписывает уже существующие.
+    """
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        raise HTTPException(404, "Профиль не найден")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    templates = cfg.get("letter_templates") or {}
+    added = []
+    for name, content in DEFAULT_LETTER_TEMPLATES.items():
+        if overwrite or name not in templates:
+            templates[name] = content
+            added.append(name)
+    cfg["letter_templates"] = templates
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    return {"ok": True, "added": added, "total": len(templates)}
+
+
+def _resolve_letter_file(profile: str, template_name: str) -> Path | None:
+    """
+    Достаёт шаблон по имени из config.json и записывает во временный файл профиля.
+    Возвращает путь к файлу или None если шаблон не найден.
+    """
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        return None
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+
+    # Ищем сначала в пользовательских шаблонах, потом в встроенных
+    templates = cfg.get("letter_templates") or {}
+    content = templates.get(template_name) or DEFAULT_LETTER_TEMPLATES.get(template_name)
+    if not content:
+        return None
+
+    # Пишем во временный файл в директории профиля
+    tmp_path = _profile_dir(profile) / "_letter_tmp.txt"
+    tmp_path.write_text(content, encoding="utf-8")
+    return tmp_path
+
+
+# ---------------------------------------------------------------------------
 # Routes: шаблон письма (letter.txt)
 # ---------------------------------------------------------------------------
 
@@ -1365,6 +1520,19 @@ def update_letter_template(body: LetterTemplateUpdate):
 # Routes: полная форма запуска откликов
 # ---------------------------------------------------------------------------
 
+# Промпты по умолчанию для AI-генерации писем (лучше дефолтных в CLI)
+DEFAULT_SYSTEM_PROMPT = (
+    "Ты опытный специалист, помогающий писать сопроводительные письма для откликов на вакансии на hh.ru. "
+    "Пиши живо, от первого лица, без шаблонных клише. "
+    "Письмо должно быть персонализировано под конкретную вакансию и компанию. "
+    "Объём: 3-4 предложения, не более 150 слов. Язык: русский. "
+    "Не используй placeholder'ы — твой ответ отправляется напрямую."
+)
+DEFAULT_MESSAGE_PROMPT = (
+    "Напиши краткое сопроводительное письмо от моего имени для вакансии"
+)
+
+
 class ApplyFullRequest(BaseModel):
     profile: str = "default"
     dry_run: bool = False
@@ -1381,11 +1549,12 @@ class ApplyFullRequest(BaseModel):
     excluded_filter: str = ""     # regex для исключения по названию
     # AI
     ai_filter: str = ""           # "" | "light" | "heavy"
-    use_ai: bool = False          # AI-генерация писем
-    system_prompt: str = ""
-    message_prompt: str = ""
+    use_ai: bool = False          # AI-генерация писем через OpenAI
+    system_prompt: str = ""       # если пусто — используется DEFAULT_SYSTEM_PROMPT
+    message_prompt: str = ""      # если пусто — используется DEFAULT_MESSAGE_PROMPT
     # Письмо
     force_message: bool = False   # всегда прикреплять письмо
+    template_name: str = ""       # имя шаблона из letter_templates (если не use_ai)
     # Тесты
     skip_tests: bool = True
     # Контроль
@@ -1396,9 +1565,8 @@ class ApplyFullRequest(BaseModel):
     send_email: bool = False
 
 
-@app.post("/api/run/apply-vacancies-full")
-def run_apply_vacancies_full(body: ApplyFullRequest):
-    """Запустить автоотклики со всеми параметрами."""
+def _build_apply_args(body: ApplyFullRequest) -> list[str]:
+    """Собирает список аргументов CLI для apply-vacancies из ApplyFullRequest."""
     args: list[str] = []
 
     if body.dry_run:
@@ -1425,10 +1593,17 @@ def run_apply_vacancies_full(body: ApplyFullRequest):
         args += ["--ai-filter", body.ai_filter]
     if body.use_ai:
         args.append("--use-ai")
-    if body.system_prompt:
-        args += ["--system-prompt", body.system_prompt]
-    if body.message_prompt:
-        args += ["--message-prompt", body.message_prompt]
+        # Используем улучшенные промпты если пользователь не задал свои
+        system_prompt = body.system_prompt or DEFAULT_SYSTEM_PROMPT
+        message_prompt = body.message_prompt or DEFAULT_MESSAGE_PROMPT
+        args += ["--system-prompt", system_prompt]
+        args += ["--message-prompt", message_prompt]
+    elif body.template_name:
+        # Не AI: используем шаблон из библиотеки
+        letter_path = _resolve_letter_file(body.profile, body.template_name)
+        if letter_path:
+            args += ["--letter-file", str(letter_path)]
+        # Если шаблон не найден — продолжаем без него (будет дефолтное)
     if body.force_message:
         args.append("--force-message")
     if body.skip_tests:
@@ -1439,9 +1614,14 @@ def run_apply_vacancies_full(body: ApplyFullRequest):
     args += ["--response-delay", body.response_delay]
     args += ["--per-page", str(body.per_page)]
     args += ["--total-pages", str(body.total_pages)]
+    return args
 
+
+@app.post("/api/run/apply-vacancies-full")
+def run_apply_vacancies_full(body: ApplyFullRequest):
+    """Запустить автоотклики со всеми параметрами."""
     req = RunRequest(profile=body.profile)
-    return _run_operation("apply-vacancies", req, extra=args)
+    return _run_operation("apply-vacancies", req, extra=_build_apply_args(body))
 
 
 # ---------------------------------------------------------------------------
@@ -1566,11 +1746,16 @@ class AgentRunRequest(BaseModel):
     2. Обновит если истёк (и есть refresh_token)
     3. Запустит операцию
     4. Вернёт op_id для polling статуса
+
+    Для apply-vacancies можно передать apply_params вместо голых args —
+    тогда шаблоны писем и промпты разрешаются автоматически.
     """
     profile: str = "default"
     operation: str = "apply-vacancies"   # apply-vacancies | update-resumes | refresh-token
     auto_refresh: bool = True            # попробовать refresh-token если истёк
     args: list[str] = Field(default_factory=list)   # дополнительные аргументы CLI
+    # Удобный способ запустить apply-vacancies без ручного составления args
+    apply_params: ApplyFullRequest | None = None
 
 
 @app.post("/api/agent/run")
@@ -1616,7 +1801,14 @@ def agent_run(body: AgentRunRequest):
             "Нужна ручная авторизация: запустите 'python -m hh_applicant_tool auth' в терминале."
         )
 
-    req = RunRequest(profile=profile, extra_args=body.args)
+    # Если переданы apply_params — разворачиваем в args автоматически
+    extra_args = list(body.args)
+    if body.operation == "apply-vacancies" and body.apply_params:
+        params = body.apply_params
+        params.profile = profile  # синхронизируем профиль
+        extra_args = _build_apply_args(params) + extra_args
+
+    req = RunRequest(profile=profile, extra_args=extra_args)
     result = _run_operation(body.operation, req)
     result["refreshed_token"] = refreshed
     result["token_status"] = token["status"]

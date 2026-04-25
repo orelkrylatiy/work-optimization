@@ -1287,51 +1287,98 @@ def get_messages(neg_id: int, profile: str = Query("default")):
     return {"messages": messages, "found": data.get("found", 0)}
 
 
+def _call_openai(cfg_path: Path, system: str, user: str, max_tokens: int = 400) -> str:
+    """Универсальный хелпер для вызова OpenAI из config.json профиля."""
+    import urllib.request as _urlreq
+
+    if not cfg_path.exists():
+        raise HTTPException(404, "config.json не найден")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    openai_cfg = cfg.get("openai") or {}
+    api_key = openai_cfg.get("api_key")
+    if not api_key:
+        raise HTTPException(400, "OpenAI API key не настроен")
+
+    payload = json.dumps({
+        "model": openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.7,
+        "max_tokens": max_tokens,
+    }).encode()
+    req = _urlreq.Request(
+        f"{openai_cfg.get('base_url', constants.OPENAI_DEFAULT_BASE_URL).rstrip('/')}/chat/completions",
+        data=payload,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    with _urlreq.urlopen(req, timeout=30) as r:
+        result = json.load(r)
+    return result["choices"][0]["message"]["content"]
+
+
 class ReplyRequest(BaseModel):
-    message: str
+    message: str = ""
     use_ai: bool = False
     profile: str = "default"
     vacancy_name: str = ""
     employer_name: str = ""
+    # Если передана история — AI учтёт контекст
+    # Если не передана — endpoint сам загрузит её из HH API
+    history: list[dict] | None = None
+    fetch_history: bool = True   # автоматически загрузить историю если не передана
 
 
 @app.post("/api/inbox/{neg_id}/reply")
 def send_reply(neg_id: int, body: ReplyRequest):
-    """Отправить сообщение в переписку."""
+    """
+    Отправить сообщение в переписку.
+    При use_ai=True загружает полную историю сообщений и передаёт AI —
+    ответ будет контекстно-зависимым, а не generic.
+    """
     text = body.message.strip()
 
     if body.use_ai and not text:
-        # Генерируем ответ через AI
-        cfg_path = _config_path(body.profile)
-        if cfg_path.exists():
-            with open(cfg_path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            openai_cfg = cfg.get("openai") or {}
-            api_key = openai_cfg.get("api_key")
-            if api_key:
-                import urllib.request
-                system = (
-                    "Ты помогаешь отвечать на сообщения от HR-специалистов в рамках поиска работы. "
-                    "Пиши вежливо, профессионально, кратко. Язык: русский."
-                )
-                user = f"Напиши вежливый ответ HR по вакансии «{body.vacancy_name}» от компании «{body.employer_name}»."
-                payload = json.dumps({
-                    "model": openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL),
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 300,
-                }).encode()
-                req = urllib.request.Request(
-                    f"{openai_cfg.get('base_url', constants.OPENAI_DEFAULT_BASE_URL).rstrip('/')}/chat/completions",
-                    data=payload,
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=20) as r:
-                    result = json.load(r)
-                text = result["choices"][0]["message"]["content"]
+        # Загружаем историю переписки для контекста
+        history = body.history
+        if history is None and body.fetch_history:
+            try:
+                msgs_data = _hh_get(body.profile, f"/negotiations/{neg_id}/messages", {"per_page": 20})
+                history = msgs_data.get("items", [])
+            except Exception:
+                history = []
+
+        # Форматируем историю для AI
+        history_text = ""
+        if history:
+            lines = []
+            for m in history[-10:]:   # последние 10 сообщений
+                author = m.get("author") or {}
+                who = "Работодатель" if author.get("participant_type") == "employer" else "Я"
+                msg_text = (m.get("text") or "").strip()
+                if msg_text:
+                    lines.append(f"{who}: {msg_text}")
+            history_text = "\n".join(lines)
+
+        system = (
+            "Ты — соискатель, ищущий работу на hh.ru. "
+            "Отвечай на сообщения HR вежливо, профессионально, кратко (2-4 предложения). "
+            "Учитывай контекст переписки. Язык: русский. "
+            "Не используй шаблонные фразы — пиши живо."
+        )
+        user_parts = [f"Вакансия: «{body.vacancy_name}»", f"Компания: «{body.employer_name}»"]
+        if history_text:
+            user_parts.append(f"\nИстория переписки:\n{history_text}")
+        user_parts.append("\nНапиши мой следующий ответ работодателю.")
+
+        try:
+            text = _call_openai(_config_path(body.profile), system, "\n".join(user_parts))
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(500, f"Ошибка OpenAI: {ex}") from ex
 
     if not text:
         raise HTTPException(400, "Сообщение не может быть пустым")
@@ -1765,7 +1812,7 @@ def agent_run(body: AgentRunRequest):
     Агент не должен думать о токенах — всё обрабатывается автоматически.
     """
     profile = _validate_profile_name(body.profile)
-    allowed_ops = {"apply-vacancies", "update-resumes", "refresh-token"}
+    allowed_ops = {"apply-vacancies", "update-resumes", "refresh-token", "reply-employers"}
     if body.operation not in allowed_ops:
         raise HTTPException(400, f"Операция должна быть одной из: {', '.join(sorted(allowed_ops))}")
 
@@ -1813,6 +1860,257 @@ def agent_run(body: AgentRunRequest):
     result["refreshed_token"] = refreshed
     result["token_status"] = token["status"]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Routes: дайджест / daily summary для агента
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agent/digest")
+def agent_digest(profile: str = Query("default")):
+    """
+    Компактный дайджест для AI агента — одним вызовом получить полную картину.
+    Включает: статистику за сегодня, входящие требующие ответа,
+    статус токена, последние ошибки из лога.
+    """
+    import datetime as dt
+
+    profile = _validate_profile_name(profile)
+    token = _get_token_info(profile)
+
+    # --- Статистика из БД ---
+    today_str = dt.date.today().isoformat()
+    stats: dict[str, Any] = {}
+    inbox_needs_reply: list[dict] = []
+
+    try:
+        conn = get_conn(profile)
+        try:
+            # Отклики за сегодня
+            stats["applied_today"] = (q1(conn,
+                "SELECT count(*) as c FROM negotiations WHERE date(created_at) = ?", (today_str,)) or {}).get("c", 0)
+            # По статусам
+            states = q(conn, "SELECT state, count(*) as cnt FROM negotiations GROUP BY state ORDER BY cnt DESC")
+            stats["by_state"] = {r["state"]: r["cnt"] for r in states}
+            # Итого
+            stats["total_applied"] = (q1(conn, "SELECT count(*) as c FROM negotiations") or {}).get("c", 0)
+            stats["total_skipped"] = (q1(conn, "SELECT count(*) as c FROM skipped_vacancies") or {}).get("c", 0)
+            # Резюме
+            resumes = q(conn, "SELECT title, total_views, new_views FROM resumes")
+            stats["resumes"] = resumes
+        finally:
+            conn.close()
+    except HTTPException:
+        stats["db_error"] = "DB not found"
+
+    # --- Входящие требующие ответа (из HH API) ---
+    try:
+        inbox_data = _hh_get(profile, "/negotiations", {"per_page": 50, "page": 0})
+        for n in inbox_data.get("items", []):
+            if not n.get("has_updates"):
+                continue
+            state_id = (n.get("state") or {}).get("id", "")
+            if state_id == "discard":
+                continue
+            vacancy = n.get("vacancy") or {}
+            employer = (vacancy.get("employer") or {})
+            inbox_needs_reply.append({
+                "id": n.get("id"),
+                "state": state_id,
+                "vacancy_name": vacancy.get("name"),
+                "employer_name": employer.get("name"),
+                "updated_at": n.get("updated_at"),
+            })
+    except HTTPException:
+        pass   # нет токена — пропускаем
+
+    # --- Последние строки лога (ошибки) ---
+    recent_errors: list[str] = []
+    log_path = _log_path(profile)
+    if log_path.exists():
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        recent_errors = [
+            l.strip() for l in lines[-100:]
+            if "ERROR" in l or "WARNING" in l
+        ][-10:]
+
+    return {
+        "profile": profile,
+        "date": today_str,
+        "token": {
+            "status": token["status"],
+            "expires_in_seconds": token.get("expires_in_seconds"),
+            "can_refresh": token.get("can_refresh", False),
+        },
+        "stats": stats,
+        "inbox_needs_reply": inbox_needs_reply,
+        "inbox_needs_reply_count": len(inbox_needs_reply),
+        "recent_errors": recent_errors,
+        "action_needed": (
+            "reauth" if token["status"] in ("no_token", "no_config")
+            else "refresh" if token["status"] == "expired" and token.get("can_refresh")
+            else "reply_inbox" if inbox_needs_reply
+            else "none"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes: контент резюме (для контекстных AI-писем)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/resumes/{resume_id}/content")
+def get_resume_content(resume_id: str, profile: str = Query("default")):
+    """
+    Получить текст резюме из HH API для использования в AI-генерации писем.
+    Возвращает структурированный текст: навыки, опыт, образование.
+    Передайте этот текст в system_prompt при запуске apply-vacancies.
+    """
+    profile = _validate_profile_name(profile)
+    data = _hh_get(profile, f"/resumes/{resume_id}")
+
+    def _strip(html_text: str) -> str:
+        """Убирает HTML-теги."""
+        return re.sub(r"<[^>]+>", " ", html_text or "").strip()
+
+    lines: list[str] = []
+
+    # Заголовок
+    lines.append(f"РЕЗЮМЕ: {data.get('title', '')}")
+    lines.append(f"Статус: {(data.get('status') or {}).get('name', '')}")
+
+    # Зарплата
+    sal = data.get("salary")
+    if sal:
+        lines.append(f"Ожидаемая зарплата: {sal.get('amount', '')} {sal.get('currency', '')}")
+
+    # Навыки
+    skills = [s.get("name", "") for s in (data.get("skills") or [])]
+    if skills:
+        lines.append(f"Ключевые навыки: {', '.join(skills)}")
+
+    skill_set = data.get("skill_set") or []
+    if skill_set:
+        lines.append(f"Технологии: {', '.join(skill_set)}")
+
+    # Опыт
+    experiences = data.get("experience") or []
+    if experiences:
+        lines.append("\nОПЫТ РАБОТЫ:")
+        for exp in experiences[:5]:  # топ-5
+            company = exp.get("company") or (exp.get("employer") or {}).get("name") or ""
+            position = exp.get("position") or ""
+            start = exp.get("start") or ""
+            end = exp.get("end") or "по настоящее время"
+            desc = _strip(exp.get("description") or "")[:300]
+            lines.append(f"- {position} в {company} ({start[:7]} — {end[:7] if end != 'по настоящее время' else end})")
+            if desc:
+                lines.append(f"  {desc}")
+
+    # Образование
+    educations = data.get("education") or {}
+    edu_list = educations.get("primary") or []
+    if edu_list:
+        lines.append("\nОБРАЗОВАНИЕ:")
+        for edu in edu_list[:2]:
+            lines.append(f"- {edu.get('name', '')} — {edu.get('organization', '')}")
+
+    resume_text = "\n".join(lines)
+    return {
+        "resume_id": resume_id,
+        "title": data.get("title"),
+        "text": resume_text,
+        "system_prompt_suggestion": (
+            f"Ты — соискатель с опытом. Вот твоё резюме:\n\n{resume_text}\n\n"
+            "На основе этого резюме пиши персонализированные сопроводительные письма. "
+            "Письмо должно быть кратким (3-4 предложения), живым, без шаблонных фраз. "
+            "Выдели один-два факта из опыта, релевантных вакансии. Язык: русский."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes: управление чёрным списком работодателей
+# ---------------------------------------------------------------------------
+
+@app.get("/api/employers/blacklist")
+def get_blacklist(profile: str = Query("default")):
+    """Получить список заблокированных работодателей из HH API."""
+    data = _hh_get(profile, "/employers/blacklisted", {"per_page": 50})
+    items = []
+    for e in data.get("items", []):
+        items.append({
+            "id": e.get("id"),
+            "name": e.get("name"),
+            "alternate_url": e.get("alternate_url"),
+            "logo": (e.get("logo_urls") or {}).get("90"),
+        })
+    return {"items": items, "found": data.get("found", 0)}
+
+
+@app.post("/api/employers/blacklist/{employer_id}")
+def add_to_blacklist(employer_id: str, profile: str = Query("default")):
+    """Добавить работодателя в чёрный список HH."""
+    if not employer_id.isdigit():
+        raise HTTPException(400, "employer_id должен быть числом")
+    _hh_request(profile, "PUT", f"/employers/blacklisted/{employer_id}")
+    return {"ok": True, "employer_id": employer_id, "action": "blacklisted"}
+
+
+@app.delete("/api/employers/blacklist/{employer_id}")
+def remove_from_blacklist(employer_id: str, profile: str = Query("default")):
+    """Удалить работодателя из чёрного списка HH."""
+    if not employer_id.isdigit():
+        raise HTTPException(400, "employer_id должен быть числом")
+    _hh_delete(profile, f"/employers/blacklisted/{employer_id}")
+    return {"ok": True, "employer_id": employer_id, "action": "unblacklisted"}
+
+
+# ---------------------------------------------------------------------------
+# Routes: массовый ответ работодателям (reply-employers CLI)
+# ---------------------------------------------------------------------------
+
+class ReplyEmployersRequest(BaseModel):
+    profile: str = "default"
+    use_ai: bool = True
+    only_invitations: bool = False   # только отвечать на приглашения
+    dry_run: bool = False
+    max_pages: int = 10
+    period: int | None = None        # игнорировать отклики старше N дней
+    system_prompt: str = ""
+    message_prompt: str = ""
+    reply_message: str = ""          # фиксированное сообщение (если не use_ai)
+
+
+@app.post("/api/run/reply-employers")
+def run_reply_employers(body: ReplyEmployersRequest):
+    """
+    Запустить reply-employers — автоматически ответить на все переписки где
+    последнее сообщение от работодателя.
+    CLI читает полную историю чата и передаёт AI для контекстного ответа.
+    """
+    args: list[str] = []
+    if body.dry_run:
+        args.append("--dry-run")
+    if body.use_ai:
+        args.append("--use-ai")
+        sp = body.system_prompt or (
+            "Ты — соискатель на hh.ru. Отвечай на сообщения HR вежливо, "
+            "кратко, профессионально. Учитывай историю переписки. Язык: русский."
+        )
+        mp = body.message_prompt or "Напиши ответ работодателю на основе истории переписки."
+        args += ["--system-prompt", sp, "--message-prompt", mp]
+    if body.reply_message:
+        args += ["--reply-message", body.reply_message]
+    if body.only_invitations:
+        args.append("--only-invitations")
+    if body.period is not None:
+        args += ["--period", str(body.period)]
+    args += ["--max-pages", str(body.max_pages)]
+
+    req = RunRequest(profile=body.profile)
+    return _run_operation("reply-employers", req, extra=args)
 
 
 # ---------------------------------------------------------------------------

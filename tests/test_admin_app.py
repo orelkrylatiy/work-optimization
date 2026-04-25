@@ -591,6 +591,247 @@ def test_apply_full_uses_improved_system_prompt(tmp_path, monkeypatch):
     assert args[sp_idx] == admin_app.DEFAULT_SYSTEM_PROMPT
 
 
+# ---------------------------------------------------------------------------
+# Inbox reply with conversation history
+# ---------------------------------------------------------------------------
+
+def test_inbox_reply_fetches_history_when_use_ai(tmp_path, monkeypatch):
+    """send_reply with use_ai=True should load conversation history from HH API."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "reply-hist"})
+    cfg = tmp_path / "reply-hist" / "config.json"
+    cfg.write_text(
+        json.dumps({"token": {"access_token": "tok", "access_expires_at": time.time() + 3600},
+                    "openai": {"api_key": "sk-test", "model": "gpt-4o-mini"}}),
+        encoding="utf-8",
+    )
+
+    hh_calls = []
+    ai_calls = []
+
+    def fake_hh_get(profile, path, params=None):
+        hh_calls.append(path)
+        if "messages" in path:
+            return {"items": [
+                {"text": "Приглашаем на собеседование", "author": {"participant_type": "employer"}},
+                {"text": "Спасибо, жду подробностей", "author": {"participant_type": "applicant"}},
+                {"text": "Когда вам удобно?", "author": {"participant_type": "employer"}},
+            ], "pages": 1}
+        return {}
+
+    def fake_call_openai(cfg_path, system, user, max_tokens=400):
+        ai_calls.append(user)
+        return "Добрый день! Удобно в среду с 14:00."
+
+    monkeypatch.setattr(admin_app, "_hh_get", fake_hh_get)
+    monkeypatch.setattr(admin_app, "_hh_post", lambda *a, **k: {})
+    monkeypatch.setattr(admin_app, "_call_openai", fake_call_openai)
+
+    resp = client.post("/api/inbox/12345/reply", json={
+        "profile": "reply-hist",
+        "message": "",
+        "use_ai": True,
+        "vacancy_name": "Python Dev",
+        "employer_name": "Acme Corp",
+        "fetch_history": True,
+    })
+
+    assert resp.status_code == 200
+    assert resp.json()["sent"] == "Добрый день! Удобно в среду с 14:00."
+    # Проверяем что история загружалась
+    assert any("messages" in p for p in hh_calls)
+    # Проверяем что история попала в AI prompt
+    assert any("Когда вам удобно" in u for u in ai_calls)
+
+
+def test_inbox_reply_uses_provided_history(tmp_path, monkeypatch):
+    """send_reply should use history from request body without fetching from HH API."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "reply-prov"})
+    (tmp_path / "reply-prov" / "config.json").write_text(
+        json.dumps({"openai": {"api_key": "sk-x"}}), encoding="utf-8"
+    )
+
+    hh_calls = []
+    ai_prompts = []
+
+    monkeypatch.setattr(admin_app, "_hh_get", lambda *a, **k: (hh_calls.append(a), {})[1])
+    monkeypatch.setattr(admin_app, "_hh_post", lambda *a, **k: {})
+    monkeypatch.setattr(
+        admin_app, "_call_openai",
+        lambda cfg, sys, user, **kw: (ai_prompts.append(user), "Ответ агента")[1],
+    )
+
+    resp = client.post("/api/inbox/99/reply", json={
+        "profile": "reply-prov",
+        "use_ai": True,
+        "vacancy_name": "Dev",
+        "employer_name": "Corp",
+        "history": [{"text": "Привет!", "author": {"participant_type": "employer"}}],
+        "fetch_history": False,  # не загружать из HH
+    })
+
+    assert resp.status_code == 200
+    # HH API за сообщениями не обращался
+    assert not any("messages" in str(c) for c in hh_calls)
+    # Но история из тела попала в промпт
+    assert any("Привет" in p for p in ai_prompts)
+
+
+# ---------------------------------------------------------------------------
+# Digest endpoint
+# ---------------------------------------------------------------------------
+
+def test_digest_returns_action_needed(tmp_path, monkeypatch):
+    """/api/agent/digest returns action_needed=reauth when token is missing."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "digest-noauth"})
+
+    resp = client.get("/api/agent/digest?profile=digest-noauth")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["token"]["status"] == "no_token"
+    assert data["action_needed"] == "reauth"
+
+
+def test_digest_with_valid_token_no_inbox(tmp_path, monkeypatch):
+    """/api/agent/digest returns action_needed=none when token ok and no inbox updates."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "digest-ok"})
+    (tmp_path / "digest-ok" / "config.json").write_text(
+        json.dumps({"token": {"access_token": "t", "access_expires_at": time.time() + 3600}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(admin_app, "_hh_get", lambda *a, **k: {"items": [], "found": 0})
+
+    resp = client.get("/api/agent/digest?profile=digest-ok")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["token"]["status"] == "ok"
+    assert data["inbox_needs_reply_count"] == 0
+    assert data["action_needed"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Blacklist endpoints
+# ---------------------------------------------------------------------------
+
+def test_add_to_blacklist_calls_hh_api(tmp_path, monkeypatch):
+    """/api/employers/blacklist/{id} should call HH API PUT."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "bl-test"})
+    (tmp_path / "bl-test" / "config.json").write_text(
+        json.dumps({"token": {"access_token": "tok", "access_expires_at": time.time() + 3600}}),
+        encoding="utf-8",
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        admin_app, "_hh_request",
+        lambda profile, method, path, **kw: (calls.append((method, path)), {})[1],
+    )
+
+    resp = client.post("/api/employers/blacklist/12345?profile=bl-test")
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert any(m == "PUT" and "blacklisted/12345" in p for m, p in calls)
+
+
+def test_blacklist_rejects_non_numeric_employer_id(tmp_path, monkeypatch):
+    """Blacklist endpoint should reject non-numeric employer_id."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "bl-bad"})
+
+    resp = client.post("/api/employers/blacklist/not-a-number?profile=bl-bad")
+
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# reply-employers operation
+# ---------------------------------------------------------------------------
+
+def test_reply_employers_run_builds_correct_args(monkeypatch):
+    """reply-employers endpoint should pass --use-ai and context to CLI."""
+    captured = {}
+
+    class FakeProcess:
+        pid = 7
+        returncode = 0
+        def communicate(self, timeout=None): return "", ""
+        def poll(self): return 0
+
+    class SyncThread:
+        def __init__(self, target, daemon=None): self.target = target
+        def start(self): self.target()
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProcess()
+
+    monkeypatch.setattr(admin_app.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(admin_app.threading, "Thread", SyncThread)
+    admin_app.running_operations.clear()
+
+    result = admin_app.run_reply_employers(
+        admin_app.ReplyEmployersRequest(
+            profile="default",
+            use_ai=True,
+            only_invitations=True,
+            max_pages=5,
+        )
+    )
+
+    assert result["op_id"]
+    cmd = captured["cmd"]
+    assert "reply-employers" in cmd
+    assert "--use-ai" in cmd
+    assert "--only-invitations" in cmd
+    assert "--no-auto-auth" in cmd
+
+
+def test_agent_run_allows_reply_employers(tmp_path, monkeypatch):
+    """/api/agent/run should accept reply-employers as a valid operation."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-reply"})
+    (tmp_path / "agent-reply" / "config.json").write_text(
+        json.dumps({"token": {"access_token": "t", "access_expires_at": time.time() + 3600}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        admin_app, "_run_operation",
+        lambda op, body, extra=None: {"op_id": "r1", "stdout": "", "stderr": ""},
+    )
+
+    resp = client.post("/api/agent/run", json={
+        "profile": "agent-reply",
+        "operation": "reply-employers",
+        "args": ["--use-ai", "--only-invitations"],
+    })
+
+    assert resp.status_code == 200
+    assert resp.json()["op_id"] == "r1"
+
+
 def test_agent_run_with_apply_params(tmp_path, monkeypatch):
     """/api/agent/run with apply_params should build and pass correct CLI args."""
     import time

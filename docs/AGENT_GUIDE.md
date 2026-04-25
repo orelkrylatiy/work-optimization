@@ -400,27 +400,225 @@ PUT /api/config?profile=default
 
 ---
 
-## Справка по endpoint-ам
+## Дайджест — одним вызовом получить всё нужное
 
 ```
-GET  /api/agent/preflight?profile=    # проверить готовность перед операцией
-POST /api/agent/run                   # запустить операцию (основной endpoint)
-GET  /api/token-status?profile=       # статус токена (offline, без запросов к HH)
-GET  /api/operation-status/{op_id}    # статус фоновой операции
+GET /api/agent/digest?profile=default
+```
 
-GET  /api/inbox?profile=              # список переписок
-GET  /api/inbox/{id}/messages         # история сообщений
-POST /api/inbox/{id}/reply            # отправить ответ
-POST /api/inbox/clear-rejections      # скрыть отказы
+```json
+{
+  "date": "2025-04-25",
+  "token": { "status": "ok", "expires_in_seconds": 82400 },
+  "stats": {
+    "applied_today": 23,
+    "total_applied": 187,
+    "by_state": { "active": 45, "invitation": 3, "discard": 12 }
+  },
+  "inbox_needs_reply": [
+    { "id": 123, "state": "invitation", "vacancy_name": "Python Dev", "employer_name": "Acme" }
+  ],
+  "inbox_needs_reply_count": 1,
+  "action_needed": "reply_inbox"
+}
+```
 
-GET  /api/letter-templates?profile=   # список шаблонов писем
-POST /api/letter-templates            # создать/обновить шаблон
-DELETE /api/letter-templates/{name}   # удалить шаблон
-POST /api/letter-templates/seed       # заполнить встроенными шаблонами
+Поле `action_needed`: `none` / `reply_inbox` / `refresh` / `reauth`.  
+Агент может начинать каждый цикл именно с этого вызова.
 
-GET  /api/profiles                    # список профилей
-POST /api/profiles                    # создать профиль
-GET  /api/stats?profile=              # статистика откликов
-PUT  /api/config?profile=             # обновить настройки
-GET  /api/logs?profile=               # просмотр логов
+---
+
+## Массовый ответ работодателям (reply-employers)
+
+Самый мощный режим: CLI читает **полную историю каждой переписки** и передаёт AI.
+
+```
+POST /api/run/reply-employers
+```
+
+```json
+{
+  "profile": "default",
+  "use_ai": true,
+  "only_invitations": false,
+  "max_pages": 10,
+  "period": 14
+}
+```
+
+Или через `/api/agent/run`:
+
+```json
+{
+  "profile": "default",
+  "operation": "reply-employers",
+  "auto_refresh": true,
+  "args": ["--use-ai", "--only-invitations", "--max-pages", "10"]
+}
+```
+
+Параметры `reply-employers`:
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `use_ai` | bool | AI генерирует ответ по истории чата |
+| `only_invitations` | bool | Отвечать только на приглашения |
+| `max_pages` | int | Сколько страниц переписок проверить |
+| `period` | int | Игнорировать чаты старше N дней |
+| `reply_message` | str | Фиксированный шаблон ответа (без AI) |
+| `dry_run` | bool | Тест без отправки |
+
+---
+
+## Контекстный ответ в конкретный чат
+
+`/api/inbox/{id}/reply` теперь загружает историю переписки перед вызовом AI:
+
+```
+POST /api/inbox/123456/reply
+```
+
+```json
+{
+  "profile": "default",
+  "message": "",
+  "use_ai": true,
+  "vacancy_name": "Python Dev",
+  "employer_name": "Acme Corp",
+  "fetch_history": true
+}
+```
+
+AI получит последние 10 сообщений чата — ответ будет осмысленным.  
+Можно передать историю явно через поле `history: [...]` (тогда `fetch_history: false`).
+
+---
+
+## Резюме-контент для персонализированных писем
+
+Получи текст резюме и используй как `system_prompt` при запуске откликов:
+
+```
+GET /api/resumes/{resume_id}/content?profile=default
+```
+
+```json
+{
+  "resume_id": "abc123",
+  "title": "Python разработчик",
+  "text": "РЕЗЮМЕ: Python разработчик\nКлючевые навыки: Python, FastAPI...\nОПЫТ РАБОТЫ:\n- Senior Dev в Acme...",
+  "system_prompt_suggestion": "Ты — соискатель с опытом. Вот твоё резюме:\n\n..."
+}
+```
+
+Использование:
+
+```json
+{
+  "operation": "apply-vacancies",
+  "apply_params": {
+    "use_ai": true,
+    "force_message": true,
+    "system_prompt": "<вставить system_prompt_suggestion из ответа выше>"
+  }
+}
+```
+
+Письма сразу станут персонализированными — AI будет ссылаться на конкретный опыт.
+
+---
+
+## Управление чёрным списком
+
+```
+GET    /api/employers/blacklist?profile=         # список заблокированных
+POST   /api/employers/blacklist/{employer_id}    # заблокировать
+DELETE /api/employers/blacklist/{employer_id}    # разблокировать
+```
+
+Агент может автоматически блокировать работодателей после отказа или нерелевантного предложения.
+
+---
+
+## Рекомендуемый цикл агента (финальная версия)
+
+```
+[один раз при запуске]
+  POST /api/letter-templates/seed?profile=default
+  GET  /api/resumes?profile=default  →  взять resume_id
+  GET  /api/resumes/{id}/content     →  сохранить system_prompt_suggestion
+
+[каждые 4 часа]
+  GET  /api/agent/digest             →  action_needed != "reauth"?
+  POST /api/agent/run { operation: "update-resumes" }
+  POST /api/agent/run {
+    operation: "apply-vacancies",
+    apply_params: {
+      use_ai: true,
+      force_message: true,
+      system_prompt: "<resume system_prompt>",
+      skip_tests: true,
+      max_responses: 50
+    }
+  }
+
+[каждые 20 минут]
+  GET  /api/agent/digest              →  если action_needed == "none": пропустить
+  если inbox_needs_reply_count > 0:
+    POST /api/agent/run { operation: "reply-employers", args: ["--use-ai"] }
+  или точечно:
+    GET  /api/inbox?per_page=50
+    для каждого has_updates=true:
+      POST /api/inbox/{id}/reply { use_ai: true, fetch_history: true }
+
+[еженедельно]
+  POST /api/inbox/clear-rejections   →  убрать накопившиеся отказы
+  GET  /api/stats                    →  сводка для отчёта
+```
+
+---
+
+## Справка по всем endpoint-ам
+
+```
+# Агент
+GET  /api/agent/preflight?profile=    проверить готовность
+GET  /api/agent/digest?profile=       дайджест: статус + inbox + статистика
+POST /api/agent/run                   запустить операцию (apply/update/reply/refresh)
+GET  /api/token-status?profile=       офлайн-статус токена
+GET  /api/operation-status/{op_id}    статус фоновой операции
+
+# Отклики
+POST /api/run/apply-vacancies-full    запуск с полными параметрами
+POST /api/run/reply-employers         массовый ответ с историей чата
+POST /api/run/update-resumes          обновить/поднять резюме
+
+# Inbox
+GET  /api/inbox?profile=              список переписок
+GET  /api/inbox/{id}/messages         история сообщений
+POST /api/inbox/{id}/reply            ответить (+ AI с историей)
+POST /api/inbox/clear-rejections      скрыть отказы
+
+# Шаблоны писем
+GET    /api/letter-templates?profile= список шаблонов
+POST   /api/letter-templates          создать/обновить шаблон
+DELETE /api/letter-templates/{name}   удалить шаблон
+POST   /api/letter-templates/seed     заполнить встроенными
+
+# Резюме
+GET  /api/resumes?profile=            список резюме из БД
+GET  /api/resumes/{id}/content        текст резюме для system_prompt
+
+# Чёрный список
+GET    /api/employers/blacklist?profile=       список
+POST   /api/employers/blacklist/{id}           заблокировать
+DELETE /api/employers/blacklist/{id}           разблокировать
+
+# Управление
+GET  /api/profiles                    список профилей
+POST /api/profiles                    создать профиль
+GET  /api/stats?profile=              статистика откликов
+PUT  /api/config?profile=             обновить настройки (openai, delays, ...)
+GET  /api/logs?profile=               последние логи
+POST /api/auth/reauthorize?profile=   запустить авторизацию (требует человека)
 ```

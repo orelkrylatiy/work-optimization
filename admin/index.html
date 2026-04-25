@@ -140,11 +140,30 @@
 
   /* Run operations */
   .run-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .run-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .run-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; transition: border-color .15s, box-shadow .15s, opacity .15s; }
+  .run-card.done { border-color: rgba(34,197,94,.5); box-shadow: 0 0 0 1px rgba(34,197,94,.2) inset; opacity: .9; }
   .run-card h3 { font-size: 15px; margin-bottom: 6px; }
   .run-card p { color: var(--text2); font-size: 13px; margin-bottom: 14px; }
   .run-card .run-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .run-card-header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
+  .run-done-badge { font-size: 11px; border-radius: 20px; padding: 2px 8px; border: 1px solid var(--border); color: var(--text2); background: var(--bg3); white-space: nowrap; }
+  .run-done-badge.done { border-color: rgba(34,197,94,.35); color: var(--green); background: rgba(34,197,94,.15); }
+  .run-card-footer { margin-top: 12px; display: flex; justify-content: flex-end; }
   .run-output { margin-top: 12px; background: #0a0c12; border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; color: #c8d3e0; display: none; }
+
+  .dashboard-grid-two { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:24px; }
+  .dashboard-grid-main { display:grid; grid-template-columns:2fr 1fr; gap:24px; }
+
+  .home-wrap { max-width: 900px; margin: 0 auto; display:flex; flex-direction:column; gap:18px; }
+  .home-hero { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
+  .home-hero h2 { font-size: 22px; margin-bottom: 10px; }
+  .home-hero p { color: var(--text2); font-size: 14px; }
+  .home-note { margin-top: 14px; background: rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.3); color: #fcd34d; border-radius: var(--radius); padding: 10px 12px; font-size: 13px; font-weight: 600; }
+  .home-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top: 16px; }
+  .home-steps { background: var(--bg2); border:1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+  .home-steps ol { margin: 0; padding-left: 18px; color: var(--text2); }
+  .home-steps li { margin: 8px 0; }
+  .home-steps strong { color: var(--text); }
 
   /* Loading spinner */
   .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
@@ -206,6 +225,19 @@
     /* скрываем текст аккаунта, оставляем только эмодзи */
     #profile-current-label { display: none; }
     .form-row { grid-template-columns: 1fr; }
+    .topbar { padding: 12px; }
+    .content { padding: 12px; }
+    .cards { grid-template-columns: 1fr; gap: 12px; }
+    .dashboard-grid-two, .dashboard-grid-main { grid-template-columns: 1fr; gap: 14px; }
+    .run-grid { grid-template-columns: 1fr; }
+    .run-card { padding: 14px; }
+    .table-wrap { overflow-x: auto; }
+    table { min-width: 620px; }
+    .pagination { flex-wrap: wrap; }
+    .home-hero { padding: 16px; }
+    .home-hero h2 { font-size: 19px; }
+    .home-actions { flex-direction: column; }
+    .home-actions .btn { width: 100%; justify-content: center; }
   }
 </style>
 </head>
@@ -218,7 +250,10 @@
       <span>Admin Panel</span>
     </div>
     <div class="nav" id="nav">
-      <div class="nav-item active" data-page="dashboard" onclick="goPage('dashboard')">
+      <div class="nav-item active" data-page="home" onclick="goPage('home')">
+        <span class="icon">🏠</span><span>Главная</span>
+      </div>
+      <div class="nav-item" data-page="dashboard" onclick="goPage('dashboard')">
         <span class="icon">📊</span><span>Дашборд</span>
       </div>
       <div class="nav-item" data-page="negotiations" onclick="goPage('negotiations')">
@@ -285,7 +320,7 @@
       <div id="operations-list" style="display:flex;flex-direction:column;gap:6px;padding-left:22px"></div>
     </div>
     <div class="topbar animate__animated animate__slideInDown">
-      <h1 id="page-title">Дашборд</h1>
+      <h1 id="page-title">Главная</h1>
       <div id="topbar-actions"></div>
     </div>
     <div class="content animate__animated animate__fadeInUp" id="content">
@@ -343,8 +378,9 @@
 const API = '';
 let currentProfile = 'default';
 let availableProfiles = [];
-let currentPage = 'dashboard';
+let currentPage = 'home';
 let CONSTANTS = null;
+const RUN_CARD_DONE_KEY = 'hh-admin-run-card-done';
 
 // Загружаем константы API
 async function loadConstants() {
@@ -407,7 +443,7 @@ async function init() {
   } catch(e) {}
 
   // Восстанавливаем последнюю посещённую страницу
-  const lastPage = localStorage.getItem('lastPage') || 'dashboard';
+  const lastPage = localStorage.getItem('lastPage') || 'home';
   goPage(lastPage);
 }
 
@@ -746,6 +782,7 @@ document.addEventListener('click', function(e) {
 // Navigation
 // ---------------------------------------------------------------------------
 const PAGE_TITLES = {
+  home: 'Главная',
   dashboard: 'Дашборд',
   negotiations: 'Отклики',
   vacancies: 'Вакансии',
@@ -775,7 +812,7 @@ function goPage(page) {
   content.classList.add('animate__fadeInUp');
 
   if (page === 'logs') page = 'run';
-  const pages = { dashboard, negotiations, vacancies, skipped, employers, inbox, letter, 'letter-template': letterTemplate, 'apply-form': applyForm, run, config };
+  const pages = { home, dashboard, negotiations, vacancies, skipped, employers, inbox, letter, 'letter-template': letterTemplate, 'apply-form': applyForm, run, config };
   if (pages[page]) pages[page]();
 }
 
@@ -919,6 +956,31 @@ document.addEventListener('click', function(e) {
 // Pages
 // ---------------------------------------------------------------------------
 
+function home() {
+  const c = document.getElementById('content');
+  document.getElementById('topbar-actions').innerHTML = '';
+  c.innerHTML = `
+    <div class="home-wrap">
+      <div class="home-hero">
+        <h2>Добро пожаловать в HH Admin Panel</h2>
+        <p>Здесь можно управлять откликами, фильтрами, сообщениями и запуском автоматических задач в одном месте.</p>
+        <div class="home-note">Важно: пропустить можно только одно действие.</div>
+        <div class="home-actions">
+          <button class="btn btn-primary" onclick="goPage('run')">▶ Перейти к запуску задач</button>
+          <button class="btn btn-secondary" onclick="goPage('dashboard')">📊 Открыть дашборд</button>
+        </div>
+      </div>
+      <div class="home-steps">
+        <ol>
+          <li><strong>Проверьте профиль</strong> в левом нижнем меню.</li>
+          <li><strong>Настройте параметры</strong> во вкладках «Форма отклика» и «Настройки».</li>
+          <li><strong>Запускайте операции</strong> на странице «Запуск задач» и отмечайте карточки как выполненные.</li>
+        </ol>
+      </div>
+    </div>
+  `;
+}
+
 // DASHBOARD
 function formatSalary(row) {
   if (!row.salary_from && !row.salary_to) return '<span style="color:var(--text2)">—</span>';
@@ -1036,7 +1098,7 @@ async function dashboard() {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
+      <div class="dashboard-grid-two">
         <div class="section">
           <div class="section-title">Отклики за 14 дней</div>
           <div class="table-wrap" style="padding:16px">
@@ -1051,7 +1113,7 @@ async function dashboard() {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:24px">
+      <div class="dashboard-grid-main">
         <div class="section">
           <div class="section-title">Последние отклики <span class="badge">${d.recent_negotiations.length}</span></div>
           <div class="table-wrap">
@@ -1377,6 +1439,7 @@ async function generateLetter() {
 // RUN OPERATIONS
 async function run() {
   const c = document.getElementById('content');
+  const doneMap = loadRunCardDoneMap();
 
   // Получаем список текущих операций
   let activeOps = [];
@@ -1397,18 +1460,27 @@ async function run() {
 
   c.innerHTML = `
     <div class="run-grid">
-      <div class="run-card">
-        <h3>📤 Обновить резюме</h3>
+      <div class="run-card ${doneMap.update_resumes ? 'done' : ''}">
+        <div class="run-card-header">
+          <h3>📤 Обновить резюме</h3>
+          <span class="run-done-badge ${doneMap.update_resumes ? 'done' : ''}">${doneMap.update_resumes ? 'Выполнено' : 'Не выполнено'}</span>
+        </div>
         <p>Поднять резюме в поиске (publish). Выполняется мгновенно.</p>
         <div class="run-actions">
           <button class="btn btn-success" onclick="runOp('${CONSTANTS.operations.update_resumes}', this, false)" ${updateResumeDisabled} title="${updateResumeRunning ? 'Операция уже выполняется' : ''}">
             ${updateResumeRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
           </button>
         </div>
+        <div class="run-card-footer">
+          <button class="btn btn-secondary" onclick="toggleRunCardDone('update_resumes')">${doneMap.update_resumes ? '↩ Снять отметку' : '✅ Отметить как сделанное'}</button>
+        </div>
         <div class="run-output" id="out-${CONSTANTS.operations.update_resumes}"></div>
       </div>
-      <div class="run-card">
-        <h3>🎯 Автоотклики</h3>
+      <div class="run-card ${doneMap.apply_vacancies ? 'done' : ''}">
+        <div class="run-card-header">
+          <h3>🎯 Автоотклики</h3>
+          <span class="run-done-badge ${doneMap.apply_vacancies ? 'done' : ''}">${doneMap.apply_vacancies ? 'Выполнено' : 'Не выполнено'}</span>
+        </div>
         <p>Автоматически откликнуться на вакансии по настроенным параметрам.</p>
         <div style="margin-bottom:12px">
           <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:6px">Задержка между откликами (сек)</label>
@@ -1422,6 +1494,9 @@ async function run() {
           <button class="btn btn-danger" onclick="showApplyModal()" ${applyVacanciesDisabled} title="${applyVacanciesRunning ? 'Операция уже выполняется' : ''}">
             ${applyVacanciesRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
           </button>
+        </div>
+        <div class="run-card-footer">
+          <button class="btn btn-secondary" onclick="toggleRunCardDone('apply_vacancies')">${doneMap.apply_vacancies ? '↩ Снять отметку' : '✅ Отметить как сделанное'}</button>
         </div>
         <div class="run-output" id="out-${CONSTANTS.operations.apply_vacancies}"></div>
       </div>
@@ -1469,6 +1544,26 @@ async function run() {
       box.textContent = `Ошибка: ${e.message}`;
     }
   }
+}
+
+function loadRunCardDoneMap() {
+  try {
+    const raw = localStorage.getItem(RUN_CARD_DONE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveRunCardDoneMap(map) {
+  localStorage.setItem(RUN_CARD_DONE_KEY, JSON.stringify(map));
+}
+
+function toggleRunCardDone(cardId) {
+  const map = loadRunCardDoneMap();
+  map[cardId] = !map[cardId];
+  saveRunCardDoneMap(map);
+  if (currentPage === 'run') run();
 }
 
 // Отслеживание запущенных операций

@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Literal
 from ..api import datatypes
 from ..main import BaseNamespace, BaseOperation
 from ..storage.repositories.errors import RepositoryError
-from ._apply_vacancies_apply_flow import ApplyVacanciesApplyFlowMixin
 from ._apply_vacancies_ai import ApplyVacanciesAIMixin
+from ._apply_vacancies_apply_flow import ApplyVacanciesApplyFlowMixin
 from ._apply_vacancies_helpers import ApplyVacanciesHelpersMixin
 
 if TYPE_CHECKING:
@@ -79,6 +79,43 @@ class Operation(
     """Откликнуться на все подходящие вакансии."""
 
     __aliases__ = ("apply", "apply-similar")
+    _ARG_ATTRS = (
+        "area",
+        "bottom_lat",
+        "currency",
+        "date_from",
+        "date_to",
+        "dry_run",
+        "employer_id",
+        "employment",
+        "excluded_employer_id",
+        "excluded_filter",
+        "experience",
+        "force_message",
+        "industry",
+        "label",
+        "left_lng",
+        "max_responses",
+        "metro",
+        "no_magic",
+        "only_with_salary",
+        "order_by",
+        "per_page",
+        "period",
+        "message_prompt",
+        "premium",
+        "professional_role",
+        "resume_id",
+        "right_lng",
+        "salary",
+        "schedule",
+        "search",
+        "search_field",
+        "sort_point_lat",
+        "sort_point_lng",
+        "top_lat",
+        "total_pages",
+    )
 
     def setup_parser(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--resume-id", help="Идентефикатор резюме")
@@ -300,6 +337,29 @@ class Operation(
     def args(self) -> Namespace:
         return self._args
 
+    @staticmethod
+    def _parse_response_delay(response_delay: str) -> tuple[float, float]:
+        delay_parts = response_delay.split("-")
+        try:
+            delay_min = float(delay_parts[0])
+            delay_max = (
+                float(delay_parts[1])
+                if len(delay_parts) > 1
+                else delay_min
+            )
+        except (ValueError, IndexError):
+            logger.warning(
+                "Неверный формат задержки %r, используем по умолчанию 1-3 сек",
+                response_delay,
+            )
+            return 1.0, 3.0
+
+        return delay_min, delay_max
+
+    def _assign_args(self, args: Namespace) -> None:
+        for attr_name in self._ARG_ATTRS:
+            setattr(self, attr_name, getattr(args, attr_name))
+
     def run(
         self,
         tool: HHApplicantTool,
@@ -312,53 +372,11 @@ class Operation(
             if args.letter_file
             else self.cover_letter
         )
-        self.area = args.area
-        self.bottom_lat = args.bottom_lat
-        self.currency = args.currency
-        self.date_from = args.date_from
-        self.date_to = args.date_to
-        self.dry_run = args.dry_run
-        self.employer_id = args.employer_id
-        self.employment = args.employment
-        self.excluded_employer_id = args.excluded_employer_id
-        self.excluded_filter = args.excluded_filter
-        self.experience = args.experience
-        self.force_message = args.force_message
-        self.industry = args.industry
-        self.label = args.label
-        self.left_lng = args.left_lng
-        self.max_responses = args.max_responses
-        self.metro = args.metro
-        self.no_magic = args.no_magic
-        self.only_with_salary = args.only_with_salary
-        self.order_by = args.order_by
-        self.per_page = args.per_page
-        self.period = args.period
-        self.message_prompt = args.message_prompt
-        self.premium = args.premium
-        self.professional_role = args.professional_role
-        self.resume_id = args.resume_id
-        self.right_lng = args.right_lng
-        self.salary = args.salary
-        self.schedule = args.schedule
-        self.search = args.search
-        self.search_field = args.search_field
-        self.sort_point_lat = args.sort_point_lat
-        self.sort_point_lng = args.sort_point_lng
-        self.top_lat = args.top_lat
-        self.total_pages = args.total_pages
-
-        # Парсим задержку между откликами
-        delay_parts = args.response_delay.split("-")
-        try:
-            self.response_delay_min = float(delay_parts[0])
-            self.response_delay_max = float(delay_parts[1]) if len(delay_parts) > 1 else self.response_delay_min
-        except (ValueError, IndexError):
-            logger.warning(
-                f"Неверный формат задержки '{args.response_delay}', используем по умолчанию 1-3 сек"
-            )
-            self.response_delay_min = 1.0
-            self.response_delay_max = 3.0
+        self._assign_args(args)
+        (
+            self.response_delay_min,
+            self.response_delay_max,
+        ) = self._parse_response_delay(args.response_delay)
 
         logger.info(
             "Задежка между откликами: %.1f-%.1f сек",
@@ -474,4 +492,3 @@ class Operation(
                 logger.warning(e)
 
         print("📝 Отклики на вакансии разосланы!")
-

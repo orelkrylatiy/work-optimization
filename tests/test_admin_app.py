@@ -723,6 +723,106 @@ def test_digest_with_valid_token_no_inbox(tmp_path, monkeypatch):
     assert data["action_needed"] == "none"
 
 
+def test_digest_includes_recommended_action_for_inbox(tmp_path, monkeypatch):
+    """Digest should expose recommended_action for agent-side inbox review."""
+    import time
+
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "digest-reply"})
+    (tmp_path / "digest-reply" / "config.json").write_text(
+        json.dumps({"token": {"access_token": "t", "access_expires_at": time.time() + 3600}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        admin_app,
+        "_hh_get",
+        lambda *a, **k: {
+            "items": [
+                {
+                    "id": 10,
+                    "state": {"id": "active"},
+                    "updated_at": "2025-01-01T10:00:00+0300",
+                    "has_updates": True,
+                    "viewed_by_opponent": True,
+                    "vacancy": {"name": "Python Developer", "employer": {"name": "Acme"}},
+                }
+            ],
+            "found": 1,
+        },
+    )
+
+    resp = client.get("/api/agent/digest?profile=digest-reply")
+
+    assert resp.status_code == 200
+    item = resp.json()["inbox_needs_reply"][0]
+    assert item["recommended_action"] == "reply_employer_waiting"
+
+
+def test_review_negotiations_returns_recommendations(tmp_path, monkeypatch):
+    """Review endpoint should classify negotiations for the agent."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "agent-review"})
+
+    def fake_hh_get(profile, path, params=None):
+        if path == "/negotiations":
+            return {
+                "items": [
+                    {
+                        "id": 10,
+                        "state": {"id": "active"},
+                        "updated_at": "2025-01-01T10:00:00+0300",
+                        "has_updates": True,
+                        "viewed_by_opponent": True,
+                        "vacancy": {"name": "Python Developer", "employer": {"name": "Acme"}},
+                    },
+                    {
+                        "id": 11,
+                        "state": {"id": "discard"},
+                        "updated_at": "2025-01-01T10:00:00+0300",
+                        "has_updates": False,
+                        "viewed_by_opponent": True,
+                        "vacancy": {"name": "Frontend Developer", "employer": {"name": "Beta"}},
+                    },
+                ],
+                "found": 2,
+                "page": 0,
+                "pages": 1,
+                "per_page": 20,
+            }
+        if path == "/negotiations/10/messages":
+            return {
+                "items": [
+                    {
+                        "author": {"participant_type": "employer"},
+                        "text": "Добрый день",
+                    }
+                ]
+            }
+        if path == "/negotiations/11/messages":
+            return {
+                "items": [
+                    {
+                        "author": {"participant_type": "applicant"},
+                        "text": "Спасибо",
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(admin_app, "_hh_get", fake_hh_get)
+
+    resp = client.get("/api/agent/review-negotiations?profile=agent-review")
+
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert items[0]["recommended_action"] == "reply_employer_waiting"
+    assert items[0]["last_message_author"] == "employer"
+    assert items[1]["recommended_action"] == "skip_rejection"
+
+
 # ---------------------------------------------------------------------------
 # Blacklist endpoints
 # ---------------------------------------------------------------------------

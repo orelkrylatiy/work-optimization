@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from hh_applicant_tool import constants
 from hh_applicant_tool.api import errors as api_errors
 from hh_applicant_tool.storage.utils import init_db
+from hh_applicant_tool.utils.date import parse_api_datetime
 
 app = FastAPI(title="HH Admin Panel", version="1.0.0")
 
@@ -225,6 +227,102 @@ def _build_optional_filter(
     if like:
         return f"WHERE {column} LIKE ?", [f"%{value}%"]
     return f"WHERE {column} = ?", [value]
+
+
+def _days_since_update(updated_at: str | None) -> int | None:
+    if not updated_at:
+        return None
+    try:
+        updated_dt = parse_api_datetime(updated_at)
+    except ValueError:
+        return None
+    return (datetime.now(updated_dt.tzinfo) - updated_dt).days
+
+
+def _get_last_message_author(profile: str, negotiation_id: int | None) -> str | None:
+    if not negotiation_id:
+        return None
+    data = _hh_get(profile, f"/negotiations/{negotiation_id}/messages", {"per_page": 20})
+    items = data.get("items", [])
+    if not items:
+        return None
+    participant_type = ((items[-1].get("author") or {}).get("participant_type"))
+    if participant_type == "employer":
+        return "employer"
+    if participant_type:
+        return "candidate"
+    return None
+
+
+def _recommend_negotiation_action(
+    negotiation: dict[str, Any],
+    *,
+    days_for_followup: int = 5,
+    recent_grace_days: int = 3,
+    last_message_author: str | None = None,
+) -> tuple[str, str]:
+    state_id = (negotiation.get("state") or {}).get("id", "")
+    if state_id == "discard":
+        return "skip_rejection", "Negotiation already rejected"
+
+    days_since_update = _days_since_update(negotiation.get("updated_at"))
+    viewed_by_opponent = negotiation.get("viewed_by_opponent")
+    has_updates = negotiation.get("has_updates", False)
+
+    if last_message_author == "employer" or has_updates:
+        return "reply_employer_waiting", "Employer is waiting for a response"
+
+    if last_message_author == "candidate":
+        return "skip_already_replied", "Last message was already sent by the candidate"
+
+    if (
+        viewed_by_opponent is False
+        and days_since_update is not None
+        and days_since_update < recent_grace_days
+    ):
+        return "wait_recent_application", "Application is still fresh and not viewed yet"
+
+    if days_since_update is not None and days_since_update >= days_for_followup:
+        return "followup_candidate_silent", "No visible progress for several days"
+
+    return "wait_recent_activity", "No follow-up needed yet"
+
+
+def _build_negotiation_review_item(
+    profile: str,
+    negotiation: dict[str, Any],
+    *,
+    include_last_message_author: bool = False,
+    days_for_followup: int = 5,
+    recent_grace_days: int = 3,
+) -> dict[str, Any]:
+    vacancy = negotiation.get("vacancy") or {}
+    employer = vacancy.get("employer") or {}
+    negotiation_id = negotiation.get("id")
+    last_message_author = (
+        _get_last_message_author(profile, negotiation_id)
+        if include_last_message_author
+        else None
+    )
+    recommended_action, recommendation_reason = _recommend_negotiation_action(
+        negotiation,
+        days_for_followup=days_for_followup,
+        recent_grace_days=recent_grace_days,
+        last_message_author=last_message_author,
+    )
+    return {
+        "id": negotiation_id,
+        "state": (negotiation.get("state") or {}).get("id", ""),
+        "vacancy_name": vacancy.get("name"),
+        "employer_name": employer.get("name"),
+        "updated_at": negotiation.get("updated_at"),
+        "viewed_by_opponent": negotiation.get("viewed_by_opponent"),
+        "has_updates": negotiation.get("has_updates", False),
+        "days_since_update": _days_since_update(negotiation.get("updated_at")),
+        "last_message_author": last_message_author,
+        "recommended_action": recommended_action,
+        "recommendation_reason": recommendation_reason,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1287,6 +1385,41 @@ def get_messages(neg_id: int, profile: str = Query("default")):
     return {"messages": messages, "found": data.get("found", 0)}
 
 
+@app.get("/api/agent/review-negotiations")
+def review_negotiations(
+    profile: str = Query("default"),
+    status: str = Query(""),
+    page: int = Query(0),
+    per_page: int = Query(20),
+    include_last_message_author: bool = Query(True),
+    days_for_followup: int = Query(5),
+    recent_grace_days: int = Query(3),
+):
+    """Agent-friendly review endpoint for inbox decisioning without sending messages."""
+    params: dict[str, Any] = {"page": page, "per_page": per_page}
+    if status:
+        params["status"] = status
+
+    data = _hh_get(profile, "/negotiations", params)
+    items = [
+        _build_negotiation_review_item(
+            profile,
+            negotiation,
+            include_last_message_author=include_last_message_author,
+            days_for_followup=days_for_followup,
+            recent_grace_days=recent_grace_days,
+        )
+        for negotiation in data.get("items", [])
+    ]
+    return {
+        "items": items,
+        "found": data.get("found", 0),
+        "page": data.get("page", 0),
+        "pages": data.get("pages", 0),
+        "per_page": data.get("per_page", per_page),
+    }
+
+
 def _call_openai(cfg_path: Path, system: str, user: str, max_tokens: int = 400) -> str:
     """Универсальный хелпер для вызова OpenAI из config.json профиля."""
     import urllib.request as _urlreq
@@ -1909,18 +2042,14 @@ def agent_digest(profile: str = Query("default")):
         for n in inbox_data.get("items", []):
             if not n.get("has_updates"):
                 continue
-            state_id = (n.get("state") or {}).get("id", "")
-            if state_id == "discard":
+            review_item = _build_negotiation_review_item(
+                profile,
+                n,
+                include_last_message_author=False,
+            )
+            if review_item["recommended_action"] == "skip_rejection":
                 continue
-            vacancy = n.get("vacancy") or {}
-            employer = (vacancy.get("employer") or {})
-            inbox_needs_reply.append({
-                "id": n.get("id"),
-                "state": state_id,
-                "vacancy_name": vacancy.get("name"),
-                "employer_name": employer.get("name"),
-                "updated_at": n.get("updated_at"),
-            })
+            inbox_needs_reply.append(review_item)
     except HTTPException:
         pass   # нет токена — пропускаем
 

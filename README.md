@@ -1,441 +1,213 @@
 # HH Applicant Tool
 
-Утилита для автоматизации работы с [HeadHunter](https://hh.ru): рассылка откликов на вакансии, обновление резюме, сохранение контактов в локальной базе данных.
+Утилита для автоматизации работы с [HeadHunter](https://hh.ru): отклики на вакансии, обновление резюме, review переговоров и локальное хранение состояния.
 
-## ✨ Ключевые возможности
+## 🚀 Быстрый старт для агента
 
-- **Автоматическая рассылка откликов** — на подходящие вакансии без участия человека
-- **Обновление резюме** — поднимаем резюме в поиске работодателей
-- **AI-фильтрация вакансий** — автоматический отсев неподходящих предложений (два режима: `heavy` и `light`)
-- **Генерация сопроводительных писем** — через ChatGPT/OpenAI для персонализации откликов
-- **Локальная база данных** — все контакты и информация о вакансиях хранятся локально (SQLite)
-- **Технология эмуляции** — работает как официальное Android-приложение, избегая блокировок
-- **CLI + Web UI** — команднострочный интерфейс и веб-админ панель для управления
-- **Поддержка нескольких профилей** — работа с несколькими аккаунтами и резюме
-- **Docker** — легко развернуть на сервере или VPS
-- **Scriptable** — использование в своих Python-скриптах
-
-## 📋 Содержание
-
-- [Требования](#требования)
-- [Установка](#установка)
-- [Авторизация](#авторизация)
-- [Использование](#использование)
-- [Веб-админ панель](#веб-админ-панель)
-- [Конфигурация](#конфигурация)
-- [Шаблоны сообщений](#шаблоны-сообщений)
-- [Использование в скриптах](#использование-в-скриптах)
-
-## 📌 Требования
-
-- Python >= 3.11
-- Git
-- Docker (опционально)
-
-## 📦 Установка
-
-### Через pipx (рекомендуется)
-
+**1. Проверка состояния:**
 ```bash
-# С поддержкой авторизации (Playwright + браузер)
-pipx install 'hh-applicant-tool[playwright]'
-
-# С поддержкой sixel для вывода капчи в терминал
-pipx install 'hh-applicant-tool[playwright,pillow]'
-
-# Для обновления
-pipx upgrade hh-applicant-tool
+hh-applicant-tool whoami
+hh-applicant-tool list-resumes
 ```
 
-### Через виртуальное окружение
+**2. Ежедневный workflow:**
+```bash
+# Поднять резюме
+hh-applicant-tool boost-resume
+
+# Отклики (dry-run → live)
+hh-applicant-tool apply-vacancies --search "Frontend разработчик" --letter-file ./letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests --dry-run
+hh-applicant-tool apply-vacancies --search "Frontend разработчик" --letter-file ./letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests
+
+# Ответы работодателям
+hh-applicant-tool reply-employers -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @wavemax6" --period 2
+```
+
+**📚 Полная документация:** [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
+
+---
+
+## Что Это
+
+Проект лучше воспринимать как `automation worker` для HH:
+
+- основная работа идёт через HH API и web endpoints;
+- локальное состояние хранится в `config.json`, `cookies.txt` и SQLite;
+- регулярные задачи можно запускать по cron;
+- AI и агентный контур здесь вспомогательные, а не основной источник действий.
+
+Это не browser-RPA и не “полностью автономный агент, который сам всё решает”.
+
+## Основные возможности
+
+- автоотклики через `apply-vacancies`
+- обновление резюме через `update-resumes`
+- review переписок и ручные/AI-ответы работодателям
+- AI-фильтрация вакансий и AI-генерация писем
+- локальная SQLite база
+- web admin panel
+- поддержка нескольких профилей
+- Docker для VPS
+
+## Быстрый старт
+
+### Локально
 
 ```bash
 python -m venv venv
-. venv/bin/activate  # или venv\Scripts\activate на Windows
-pip install 'hh-applicant-tool[playwright]'
+. venv/bin/activate
+pip install '.[playwright]'
 ```
 
-### Установка зависимостей для авторизации
-
-```bash
-hh-applicant-tool install
-```
-
-### Docker (рекомендуется для сервера)
-
-**Преимущества:** Легко развернуть на VPS/сервере, не нужна установка Python локально.
-
-#### Начальная настройка
-
-Установите Docker и Docker Compose:
-
-```bash
-sudo apt install docker.io docker-compose-v2
-```
-
-Получите репозиторий:
+### Через Docker
 
 ```bash
 git clone https://github.com/s3rgeym/hh-applicant-tool
 cd hh-applicant-tool
+docker compose build
+docker compose up -d
+docker compose logs -f
 ```
 
-#### Авторизация
+## Где Хранятся Данные
 
-```bash
-# Способ 1: По коду подтверждения
-docker-compose run -u docker -it hh_applicant_tool \
-  hh-applicant-tool auth
+В директории профиля:
 
-# Способ 2: По логину и паролю
-docker-compose run -u docker -it hh_applicant_tool \
-  hh-applicant-tool auth '<email>' -p '<password>'
-
-# Способ 3: С выводом капчи в терминал (Kitty protocol)
-docker-compose run -u docker -it hh_applicant_tool \
-  hh-applicant-tool auth --use-kitty
-```
-
-#### Запуск сервиса
-
-```bash
-# Запустить в фоне (будет автозапускаться при перезагрузке)
-docker-compose up -d
-
-# Просмотр логов в реальном времени
-docker-compose logs -f
-
-# Остановить сервис
-docker-compose down
-```
-
-Сервис будет:
-- Рассылать отклики на рекомендуемые вакансии
-- Автоматически поднимать резюме через cron
-
-#### Работа с несколькими профилями
-
-Если нужно работать с несколькими аккаунтами, отредактируйте `docker-compose.yml`:
-
-```yaml
-services:
-  hh_applicant_tool:
-    # ... основной сервис ...
-
-  hh_second:
-    extends: hh_applicant_tool
-    container_name: hh_second
-    environment:
-      - HH_PROFILE_ID=second
-
-  hh_third:
-    extends: hh_applicant_tool
-    container_name: hh_third
-    environment:
-      - HH_PROFILE_ID=third
-```
-
-Авторизуйте каждый профиль:
-
-```bash
-docker-compose exec -u docker -it hh_applicant_tool \
-  hh-applicant-tool --profile second auth
-
-docker-compose exec -u docker -it hh_applicant_tool \
-  hh-applicant-tool --profile third auth
-```
-
-Затем запустите все профили:
-
-```bash
-docker-compose up -d
-```
-
-#### Тестирование
-
-Войдите в контейнер и тестируйте команды:
-
-```bash
-docker-compose exec -u docker -it hh_applicant_tool bash
-
-# Внутри контейнера:
-hh-applicant-tool whoami
-hh-applicant-tool config -p
-hh-applicant-tool refresh-token
-```
-
-#### Обновление
-
-```bash
-# Обновить код
-git pull
-
-# Пересобрать контейнер
-docker-compose up -d --build
-
-# Просмотр логов обновления
-docker-compose logs
-```
-
-#### Файлы конфигурации
-
-Все данные хранятся в `config/`:
 - `config.json` — токены и настройки
-- `data` — SQLite база данных
+- `data` — SQLite база
+- `cookies.txt` — cookies
 - `log.txt` — логи
-- `cookies.txt` — пользовательские куки
 
-> ⚠️ **Важно:** Команды `docker-compose` нужно запускать из директории проекта!
+В Docker-сценарии по умолчанию это `config/` проекта, смонтированная в `/app/config`.
 
-## 🔐 Авторизация
-
-### Способ 1: По коду подтверждения
+## Авторизация
 
 ```bash
-hh-applicant-tool authorize '<ваш email или телефон>'
-```
-
-СМС/письмо с кодом придёт на указанный номер/почту.
-
-### Способ 2: По логину и паролю
-
-```bash
-hh-applicant-tool authorize '<email>' -p '<пароль>'
-```
-
-### Способ 3: С вводом капчи в терминал
-
-Если при авторизации требуется капча, используйте флаги для вывода в терминал:
-
-```bash
-hh-applicant-tool authorize --use-kitty
-# или
-hh-applicant-tool authorize --use-sixel
-```
-
-### Проверка авторизации
-
-```bash
+hh-applicant-tool authorize '<email-or-phone>'
 hh-applicant-tool whoami
 ```
 
-## 🚀 Использование
+Для первого входа нужен человек: логин, код подтверждения, иногда капча. После этого токен и cookies сохраняются локально.
 
-### Рассылка откликов
+## Безопасный Workflow
+
+Рекомендуемый контур:
+
+1. `authorize`
+2. `whoami`
+3. `list-resumes`
+4. `apply-vacancies --dry-run`
+5. проверить выдачу
+6. только потом live batch
+
+Пример safe dry-run:
 
 ```bash
-# Рассылать на рекомендуемые вакансии
-hh-applicant-tool apply-vacancies
-
-# Поиск по ключевому слову
-hh-applicant-tool apply-vacancies --search "Python backend"
-
-# Режим тестирования (отклики не отправляются)
-hh-applicant-tool apply-vacancies --search "Python" --dry-run
-
-# С AI-фильтрацией вакансий
-hh-applicant-tool apply-vacancies --ai-filter heavy
-
-# С генерацией сопроводительных писем
-hh-applicant-tool apply-vacancies --ai
+hh-applicant-tool apply-vacancies \
+  --search "React frontend developer" \
+  --force-message \
+  --letter-file ./letter.txt \
+  --skip-tests \
+  --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан' \
+  --dry-run
 ```
 
-### Обновление резюме
+Live запуск только после просмотра dry-run:
 
 ```bash
-# Поднять все резюме в поиске
-hh-applicant-tool update-resumes
+hh-applicant-tool apply-vacancies \
+  --search "React frontend developer" \
+  --force-message \
+  --letter-file ./letter.txt \
+  --skip-tests \
+  --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан'
+```
 
-# Просмотр списка резюме
+## Основные CLI Команды
+
+```bash
+hh-applicant-tool authorize
+hh-applicant-tool whoami
 hh-applicant-tool list-resumes
-```
-
-### Остальные команды
-
-```bash
-# Просмотр логов в реальном времени
+hh-applicant-tool update-resumes
+hh-applicant-tool apply-vacancies --dry-run
+hh-applicant-tool reply-employers --dry-run
+hh-applicant-tool clear-negotiations --dry-run
+hh-applicant-tool config -p
 hh-applicant-tool log -f
-
-# Просмотр конфигурации
-hh-applicant-tool config -p
-
-# SQL-запросы к базе данных
-hh-applicant-tool query 'SELECT COUNT(*) FROM negotiations'
-
-# Обновить токен доступа
-hh-applicant-tool refresh-token
-
-# Справка
-hh-applicant-tool -h
 ```
 
-## 🌐 Веб-админ панель
+## AI
 
-Форк добавляет встроенную веб-панель для управления утилитой (FastAPI).
+AI не обязателен. Он нужен только если ты хочешь:
 
-### Запуск веб-админ панели
+- генерировать сопроводительные письма;
+- фильтровать вакансии через AI;
+- распознавать капчу через vision-модель.
 
-```bash
-python -m uvicorn admin.app:app --host 0.0.0.0 --port 8000
-```
-
-Откройте в браузере: `http://localhost:8000`
-
-### Функциональность панели
-
-- 📊 **Статистика** — общие числа откликов, исходящих статусы, график по дням
-- 📋 **Переговоры** — список откликов, фильтрация по статусу
-- 💼 **Вакансии** — просмотр сохранённых вакансий, поиск
-- 🏢 **Работодатели** — контакты и статустика по компаниям
-- ⏭️ **Пропущенные** — вакансии, отклонённые фильтром или AI
-- ⚙️ **Конфигурация** — редактирование параметров без консоли
-- 📝 **Логи** — просмотр последних записей
-- ▶️ **Операции** — запуск `apply-vacancies` и `update-resumes` с UI
-- 🔐 **Авторизация и профили** — добавление нового профиля, выход из текущего аккаунта и повторный вход теперь доступны прямо из админки
-
-## ⚙️ Конфигурация
-
-Конфиг хранится в файле `config.json`:
-
-| ОС | Путь |
-|---|---|
-| **Windows** | `C:\Users\%username%\AppData\Roaming\hh-applicant-tool\` |
-| **macOS** | `~/Library/Application Support/hh-applicant-tool/` |
-| **Linux** | `~/.config/hh-applicant-tool/` |
-
-### Редактирование конфига
-
-```bash
-# Открыть в редакторе
-hh-applicant-tool config -e
-
-# Просмотреть путь
-hh-applicant-tool config -p
-
-# Установить значение
-hh-applicant-tool config -s proxy_url "socks5://localhost:1080"
-
-# Уточнить значение
-hh-applicant-tool config -k token.access_token
-```
-
-### Параметры конфига
+Нужен OpenAI-compatible API:
 
 ```json
 {
-  "proxy_url": "socks5://localhost:1080",
-  "api_delay": 0.5,
   "openai_cover_letter": {
     "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
-    "temperature": 0.7,
-    "max_completion_tokens": 1000
+    "base_url": "https://api.openai.com/v1/chat/completions",
+    "model": "gpt-4o-mini"
   },
   "openai_vacancy_filter": {
     "api_key": "sk-...",
-    "model": "gpt-4o-mini",
-    "temperature": 0.1
-  },
-  "smtp": {
-    "host": "smtp.yandex.ru",
-    "port": 465,
-    "user": "your_email@yandex.ru",
-    "password": "app_password",
-    "ssl": true
+    "base_url": "https://api.openai.com/v1/chat/completions",
+    "model": "gpt-4o-mini"
   }
 }
 ```
 
-## 📝 Шаблоны сообщений
+Подойдут OpenAI, OpenRouter, Ollama и другие совместимые endpoint’ы.
 
-Поддерживаются плейсхолдеры при написании сообщений в откликах и ответах:
+## Web Admin / Agent Layer
 
-- `%(vacancy_name)s` — название вакансии
-- `%(employer_name)s` — название компании
-- `%(first_name)s` — ваше имя
-- `%(last_name)s` — ваша фамилия
-- `%(email)s` — ваша почта
-- `%(resume_title)s` — название резюме
-- `%(resume_url)s` — ссылка на резюме
+Админка запускается на `http://127.0.0.1:8000`.
 
-### Случайные варианты
+Полезные endpoint’ы:
 
-Для создания уникальных сообщений используйте синтаксис `{вариант1|вариант2}`:
+- `GET /api/agent/preflight`
+- `POST /api/agent/run`
+- `GET /api/agent/digest`
+- `GET /api/agent/review-negotiations`
+- `GET /api/inbox`
+- `GET /api/inbox/{neg_id}/messages`
+- `POST /api/inbox/{neg_id}/reply`
 
-```
-Здравствуйте! {Меня заинтересовала|Прошу рассмотреть} ваша вакансия %(vacancy_name)s.
-```
+Рекомендуемая модель:
 
-## 🐍 Использование в скриптах
+- cron запускает детерминированные команды;
+- агент читает digest и review endpoint’ы;
+- агент помогает с выбором search-контуров, разбором логов и follow-up;
+- агент не должен бесконтрольно слать всё подряд.
 
-```python
-from hh_applicant_tool import HHApplicantTool
+## Что Автоматизировать, А Что Нет
 
-tool = HHApplicantTool([
-    "--proxy-url", "socks5://localhost:1080",
-])
+Хорошо автоматизировать:
 
-# Работа с API
-user_info = tool.api_client.get('/me')
-print(user_info)
+- `refresh-token`
+- `update-resumes`
+- safe `apply-vacancies`
 
-# Сохранение настроек
-import datetime as dt
-tool.storage.settings.set_value("_last_run", dt.datetime.now())
-tool.save_token()
-```
+Осторожно автоматизировать:
 
-## 📊 Локальная база данных
+- `reply-employers`
+- follow-up после тишины
+- новые search-контуры
 
-Все данные хранятся в SQLite файле `data`:
+Не рекомендуется:
 
-- 📌 Просмотренные вакансии
-- 👥 Профили работодателей
-- 📞 Контакты работодателей
-- 📮 История откликов
-- 🚫 Пропущенные вакансии (с причинами)
+- запускать новый поиск сразу в live;
+- давать агенту полный live-control без рамок;
+- полагаться только на AI-фильтр;
+- использовать слишком широкий `search`.
 
-### SQL-запросы
+## Документация
 
-```bash
-# Сколько откликов отправлено
-hh-applicant-tool query 'SELECT COUNT(*) FROM negotiations'
-
-# Последние 10 откликов
-hh-applicant-tool query 'SELECT * FROM negotiations ORDER BY created_at DESC LIMIT 10'
-
-# Экспорт в CSV
-hh-applicant-tool query 'SELECT * FROM negotiations' --csv -o negotiations.csv
-```
-
-## 🛠️ Разработка
-
-### Установка для разработки
-
-```bash
-git clone https://github.com/s3rgeym/hh-applicant-tool
-cd hh-applicant-tool
-poetry install --with dev
-```
-
-### Запуск тестов
-
-```bash
-pytest
-```
-
-### Проверка кода
-
-```bash
-ruff check .
-pylint src/
-```
-
-## 📄 Лицензия
-
-[Limited Non-Commercial License](./LICENSE) — личное использование, запрещена коммерческая эксплуатация.
-
-## 🙏 Спасибо
-
-Проект основан на [оригинальном hh-applicant-tool](https://github.com/s3rgeym/hh-applicant-tool) от [s3rgeym](https://github.com/s3rgeym).
+- [Agent Guide](docs/AGENT_GUIDE.md)
+- [Autonomous Agent Workflow](docs/AUTONOMOUS_AGENT_WORKFLOW.md)
+- [Docs Index](docs/README.md)

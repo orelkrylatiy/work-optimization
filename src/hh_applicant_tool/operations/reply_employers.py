@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import random
 from datetime import datetime
@@ -13,7 +14,6 @@ from ..utils.date import parse_api_datetime
 from ..utils.string import rand_text
 
 if TYPE_CHECKING:
-    from ..ai.openai import ChatOpenAI
     from ..main import HHApplicantTool
 
 
@@ -31,6 +31,7 @@ logger = logging.getLogger(__package__)
 
 
 class Namespace(BaseNamespace):
+    resume_id: str | None
     reply_message: str
     max_pages: int
     only_invitations: bool
@@ -105,13 +106,14 @@ class Operation(BaseOperation):
     def run(self, tool: HHApplicantTool, args: Namespace) -> None:
         self.tool = tool
         self.api_client = tool.api_client
-        self.resume_id = tool.first_resume_id()
+        self.resume_id = args.resume_id
         self.reply_message = args.reply_message or tool.config.get(
             "reply_message"
         )
         self.max_pages = args.max_pages
         self.dry_run = args.dry_run
         self.only_invitations = args.only_invitations
+        self.json_output = getattr(args, 'json_output', False)
 
         self.message_prompt = args.message_prompt
         self.cover_letter_ai = (tool.get_cover_letter_ai(args.system_prompt) if args.use_ai else None)
@@ -134,15 +136,25 @@ class Operation(BaseOperation):
                 lambda resume: resume["status"]["id"] == "published", resumes
             )
         )
-        self._reply_chats(user=me, resumes=resumes, blacklist=blacklist)
+        results = self._reply_chats(user=me, resumes=resumes, blacklist=blacklist)
+        
+        if self.json_output:
+            print(json.dumps(results, ensure_ascii=False, indent=2))
 
     def _reply_chats(
         self,
         user: datatypes.User,
         resumes: list[datatypes.Resume],
         blacklist: set[str],
-    ) -> None:
+    ) -> dict:
         resume_map = {r["id"]: r for r in resumes}
+        results = {
+            "processed": 0,
+            "sent": 0,
+            "skipped": 0,
+            "errors": [],
+            "messages": []
+        }
 
         base_placeholders = {
             "first_name": user.get("first_name") or "",
@@ -153,12 +165,15 @@ class Operation(BaseOperation):
 
         for negotiation in self.tool.get_negotiations():
             try:
+                results["processed"] += 1
+                
                 # try:
                 #     self.tool.storage.negotiations.save(negotiation)
                 # except RepositoryError as e:
                 #     logger.exception(e)
 
                 if not (resume := resume_map.get(negotiation["resume"]["id"])):
+                    results["skipped"] += 1
                     continue
 
                 updated_at = parse_api_datetime(negotiation["updated_at"])
@@ -169,13 +184,16 @@ class Operation(BaseOperation):
                     and (datetime.now(updated_at.tzinfo) - updated_at).days
                     > self.period
                 ):
+                    results["skipped"] += 1
                     continue
 
                 state_id = negotiation["state"]["id"]
                 if state_id == "discard":
+                    results["skipped"] += 1
                     continue
 
                 if self.only_invitations and not state_id.startswith("inv"):
+                    results["skipped"] += 1
                     continue
 
                 nid = negotiation["id"]
@@ -184,10 +202,12 @@ class Operation(BaseOperation):
                 salary = vacancy.get("salary") or {}
 
                 if employer.get("id") in blacklist:
-                    print(
-                        "🚫 Пропускаем заблокированного работодателя",
-                        employer.get("alternate_url"),
-                    )
+                    if not self.json_output:
+                        print(
+                            "🚫 Пропускаем заблокированного работодателя",
+                            employer.get("alternate_url"),
+                        )
+                    results["skipped"] += 1
                     continue
 
                 placeholders = {
@@ -198,8 +218,9 @@ class Operation(BaseOperation):
                 }
 
                 logger.debug(
-                    "Вакансия %(vacancy_name)s от %(employer_name)s"
-                    % placeholders
+                    "Вакансия %s от %s",
+                    placeholders["vacancy_name"],
+                    placeholders["employer_name"],
                 )
 
                 page: int = 0
@@ -268,8 +289,20 @@ class Operation(BaseOperation):
                             logger.warning(
                                 f"Ошибка OpenAI для чата {nid}: {ex}"
                             )
+                            results["errors"].append({
+                                "negotiation_id": nid,
+                                "error": f"AI error: {ex}"
+                            })
                             continue
+                    elif self.json_output:
+                        # JSON mode requires a reply_message or AI
+                        results["errors"].append({
+                            "negotiation_id": nid,
+                            "error": "No reply_message provided and AI not enabled"
+                        })
+                        continue
                     else:
+                        # Interactive mode (not JSON)
                         print("🏢", placeholders["employer_name"])
                         print("💼", placeholders["vacancy_name"])
                         if salary:
@@ -302,6 +335,7 @@ class Operation(BaseOperation):
 
                         if not send_message:
                             print("🚶 Пропускаем чат")
+                            results["skipped"] += 1
                             continue
 
                         if send_message.startswith("/ban"):
@@ -313,14 +347,24 @@ class Operation(BaseOperation):
                                 "🚫 Работодатель заблокирован",
                                 employer.get("alternate_url"),
                             )
+                            results["messages"].append({
+                                "negotiation_id": nid,
+                                "action": "blacklisted",
+                                "employer_id": employer.get("id"),
+                            })
                             continue
-                        elif send_message.startswith("/cancel"):
+                        if send_message.startswith("/cancel"):
                             _, decline_msg = send_message.split("/cancel", 1)
                             self.api_client.delete(
                                 f"/negotiations/active/{nid}",
                                 with_decline_message=decline_msg.strip(),
                             )
                             print("❌ Отмена заявки", vacancy["alternate_url"])
+                            results["messages"].append({
+                                "negotiation_id": nid,
+                                "action": "cancelled",
+                                "decline_message": decline_msg.strip(),
+                            })
                             continue
 
                     # Финальная отправка текста
@@ -330,6 +374,16 @@ class Operation(BaseOperation):
                             vacancy["alternate_url"],
                             send_message,
                         )
+                        results["messages"].append({
+                            "negotiation_id": nid,
+                            "vacancy_url": vacancy["alternate_url"],
+                            "vacancy_name": placeholders["vacancy_name"],
+                            "employer_name": placeholders["employer_name"],
+                            "message": send_message,
+                            "dry_run": True,
+                            "status": "skipped_dry_run"
+                        })
+                        results["skipped"] += 1
                         continue
 
                     self.api_client.post(
@@ -337,9 +391,26 @@ class Operation(BaseOperation):
                         message=send_message,
                         delay=random.uniform(1, 3),
                     )
-                    print(f"📨 Отправлено для {vacancy['alternate_url']}")
+                    if not self.json_output:
+                        print(f"📨 Отправлено для {vacancy['alternate_url']}")
+                    results["messages"].append({
+                        "negotiation_id": nid,
+                        "vacancy_url": vacancy["alternate_url"],
+                        "vacancy_name": placeholders["vacancy_name"],
+                        "employer_name": placeholders["employer_name"],
+                        "message": send_message,
+                        "status": "sent"
+                    })
+                    results["sent"] += 1
 
             except ApiError as ex:
                 logger.error(ex)
+                results["errors"].append({
+                    "negotiation_id": nid,
+                    "error": str(ex)
+                })
 
-        print("📝 Сообщения разосланы!")
+        if not self.json_output:
+            print("📝 Сообщения разосланы!")
+        
+        return results

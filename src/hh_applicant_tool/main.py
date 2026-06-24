@@ -60,6 +60,7 @@ class BaseNamespace(argparse.Namespace):
     user_agent: str
     proxy_url: str
     openai_proxy_url: str
+    json_output: bool
     operation_run: Callable[[HHApplicantTool, BaseNamespace], None | int] | None
     operation_name: str = ""
 
@@ -129,6 +130,11 @@ class HHApplicantTool(MegaTool):
             "--ai-proxy",
             dest="openai_proxy_url",
             help="Отдельный прокси, используемый только для OpenAI чата",
+        )
+        parser.add_argument(
+            "--json",
+            help="Вывод результата в формате JSON (для скриптов и агентов)",
+            action="store_true",
         )
         subparsers = parser.add_subparsers(help="commands")
         package_dir = Path(__file__).resolve().parent / OPERATIONS

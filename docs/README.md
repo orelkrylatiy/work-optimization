@@ -1,23 +1,33 @@
-# Project Documentation
+# Документация Проекта
 
-This folder keeps long-form project notes out of the repository root.
+Эта папка хранит operational, deployment и development-документацию вне корня репозитория.
 
-## User And Runtime Docs
+## 🚀 Для агента (начать здесь)
 
-- `AUTHORIZATION_INIT.md` - authorization flow and first-run behavior.
-- `DEVOPS.md` - environment, Docker, deployment, and service operations.
-- `DEVOPS_CHEATSHEET.md` - short DevOps command reference.
-- `resume_template.md` - resume template/example.
+| Файл | Описание |
+|------|----------|
+| **[QUICKSTART.md](QUICKSTART.md)** | ⭐ Быстрый старт для агента — читать первым! |
+| **[AGENT_GUIDE.md](AGENT_GUIDE.md)** | 📚 Полное руководство агента — команды, API, troubleshooting |
+| [AUTONOMOUS_AGENT_WORKFLOW.md](AUTONOMOUS_AGENT_WORKFLOW.md) | Ограниченный автономный контур |
+| [AUTHORIZATION_INIT.md](AUTHORIZATION_INIT.md) | Как устроена авторизация и auto-auth поведение |
 
-## Development Docs
+## Runtime И Operations
 
-- `development/LINTING.md` - linting and formatting workflow.
-- `development/LINTING_SETUP.md` - linter setup details.
-- `development/TESTING.md` - testing approach.
-- `development/TESTS.md` - test suite reference.
+- `AGENT_GUIDE.md` — как использовать агент поверх инструмента
+- `AUTONOMOUS_AGENT_WORKFLOW.md` — ограниченный автономный контур
+- `AUTHORIZATION_INIT.md` — как устроена авторизация и auto-auth поведение
+- `DEVOPS.md` — подробный DevOps-гайд
+- `DEVOPS_CHEATSHEET.md` — краткая DevOps-шпаргалка
+- `DEPLOYMENT.md` — развёртывание на VPS
+- `resume_template.md` — пример шаблона резюме
 
-## API Reference
+## Development
 
-- `hhapi/openapi.yml` - HeadHunter API schema snapshot.
+- `development/LINTING.md`
+- `development/LINTING_SETUP.md`
+- `development/TESTING.md`
+- `development/TESTS.md`
 
-Generated reports, one-time setup summaries, and temporary test-result files were removed from the tracked docs to keep this folder focused.
+## API
+
+- `hhapi/openapi.yml` — snapshot HH API schema

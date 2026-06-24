@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -35,17 +36,38 @@ class Operation(BaseOperation):
         logger.debug(resumes)
         tool.storage.resumes.save_batch(resumes)
 
-        t = PrettyTable(
-            field_names=["ID", "Название", "Статус"], align="l", valign="t"
-        )
-        t.add_rows(
-            [
-                (
-                    x["id"],
-                    shorten(x["title"]),
-                    x["status"]["name"].title(),
-                )
-                for x in resumes
-            ]
-        )
-        print(t)
+        if getattr(args, 'json_output', False):
+            # JSON output for programmatic use
+            output = {
+                "resumes": [
+                    {
+                        "id": x["id"],
+                        "title": x["title"],
+                        "status": {
+                            "id": x["status"]["id"],
+                            "name": x["status"]["name"],
+                        },
+                        "updated_at": x.get("updated_at"),
+                        "created_at": x.get("created_at"),
+                    }
+                    for x in resumes
+                ],
+                "total": len(resumes),
+            }
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+        else:
+            # Human-readable table output
+            t = PrettyTable(
+                field_names=["ID", "Название", "Статус"], align="l", valign="t"
+            )
+            t.add_rows(
+                [
+                    (
+                        x["id"],
+                        shorten(x["title"]),
+                        x["status"]["name"].title(),
+                    )
+                    for x in resumes
+                ]
+            )
+            print(t)

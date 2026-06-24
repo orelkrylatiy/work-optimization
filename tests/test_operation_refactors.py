@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+from hh_applicant_tool.operations.apply_vacancies import Operation as ApplyOperation
+from hh_applicant_tool.operations.reply_employers import Operation as ReplyOperation
+
+
+def make_apply_args(**overrides):
+    defaults = {
+        "resume_id": None,
+        "letter_file": None,
+        "ignore_employers": None,
+        "force_message": False,
+        "use_ai": False,
+        "ai_filter": None,
+        "ai_rate_limit": 40,
+        "system_prompt": "system",
+        "message_prompt": "message",
+        "response_delay": "1-3",
+        "order_by": None,
+        "search": None,
+        "search_field": None,
+        "schedule": None,
+        "dry_run": False,
+        "response_delay_min": 0.0,
+        "response_delay_max": 0.0,
+        "experience": None,
+        "employment": None,
+        "area": None,
+        "metro": None,
+        "professional_role": None,
+        "industry": None,
+        "employer_id": None,
+        "excluded_employer_id": None,
+        "currency": None,
+        "salary": None,
+        "only_with_salary": False,
+        "label": None,
+        "period": None,
+        "date_from": None,
+        "date_to": None,
+        "top_lat": None,
+        "bottom_lat": None,
+        "left_lng": None,
+        "right_lng": None,
+        "sort_point_lat": None,
+        "sort_point_lng": None,
+        "no_magic": False,
+        "premium": False,
+        "per_page": 100,
+        "total_pages": 20,
+        "excluded_filter": None,
+        "max_responses": None,
+        "send_email": False,
+        "skip_tests": False,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_apply_vacancies_parses_single_delay_value() -> None:
+    operation = ApplyOperation()
+
+    assert operation._parse_response_delay("2.5") == (2.5, 2.5)
+
+
+def test_apply_vacancies_falls_back_on_invalid_delay() -> None:
+    operation = ApplyOperation()
+
+    assert operation._parse_response_delay("oops") == (1.0, 3.0)
+
+
+def test_apply_vacancies_run_assigns_selected_args(monkeypatch) -> None:
+    operation = ApplyOperation()
+    tool = Mock()
+    tool.get_cover_letter_ai.return_value = Mock()
+    monkeypatch.setattr(operation, "_apply_vacancies", Mock())
+    args = make_apply_args(
+        search="frontend",
+        per_page=50,
+        response_delay="4-6",
+        use_ai=True,
+    )
+
+    operation.run(tool, args)
+
+    assert operation.search == "frontend"
+    assert operation.per_page == 50
+    assert operation.response_delay_min == 4.0
+    assert operation.response_delay_max == 6.0
+    assert operation.cover_letter_ai is tool.get_cover_letter_ai.return_value
+
+
+def test_reply_employers_prefers_explicit_resume_id() -> None:
+    operation = ReplyOperation()
+    tool = Mock()
+    tool.api_client = Mock()
+    tool.first_resume_id.return_value = "fallback"
+    tool.config = {}
+    args = SimpleNamespace(
+        resume_id="chosen",
+        reply_message=None,
+        max_pages=5,
+        dry_run=False,
+        only_invitations=False,
+        message_prompt="prompt",
+        use_ai=False,
+        system_prompt="system",
+        period=None,
+    )
+    operation.reply_employers = Mock()
+
+    operation.run(tool, args)
+
+    assert operation.resume_id == "chosen"
+
+
+def test_reply_employers_without_resume_id_keeps_all_resumes_mode() -> None:
+    operation = ReplyOperation()
+    tool = Mock()
+    tool.api_client = Mock()
+    tool.first_resume_id.return_value = "fallback"
+    tool.config = {}
+    args = SimpleNamespace(
+        resume_id=None,
+        reply_message=None,
+        max_pages=5,
+        dry_run=False,
+        only_invitations=False,
+        message_prompt="prompt",
+        use_ai=False,
+        system_prompt="system",
+        period=None,
+    )
+    operation.reply_employers = Mock()
+
+    operation.run(tool, args)
+
+    assert operation.resume_id is None

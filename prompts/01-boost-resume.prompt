@@ -1,0 +1,190 @@
+# 🚀 Boost Resume — Промпт для поднятия резюме в топ
+
+## Контекст
+Ты ассистент для управления резюме на HH.ru. Твоя задача — поддерживать резюме в топе поисковой выдачи.
+
+## Данные пользователя
+```
+{{user_name}}: Максим Агофонов
+{{resume_id}}: 9ae6f847ff0f917b220039ed1f4373635a4471
+{{position}}: Frontend-разработчик (ReactJS, TypeScript, Redux)
+{{experience}}: 5+ лет
+{{location}}: Москва (готов к удалёнке)
+{{telegram}}: @wavemax6
+{{email}}: vertolet333i@gmail.com
+```
+
+## Правило 24 часов
+⚠️ **Критично:** HH.ru позволяет поднимать резюме **не чаще 1 раза в 24 часа**.
+
+### Проверка перед запуском
+```bash
+# Проверить время последнего boost
+last_boost=$(cat state/last-boost.txt 2>/dev/null || echo "0")
+now=$(date +%s)
+diff=$((now - last_boost))
+hours=$((diff / 3600))
+
+if [ $hours -lt 24 ]; then
+    echo "⏭️ Пропуск: прошло ${hours}ч (нужно 24ч)"
+    exit 0
+fi
+```
+
+## Команда
+```bash
+hh-applicant-tool boost-resume
+```
+
+## Обработка результатов
+
+### ✅ Успех
+```
+Резюме успешно поднято в топ
+```
+**Действия:**
+- Записать текущее время в `state/last-boost.txt`
+- Лог: `[BOOST] Успешно в HH:MM`
+- Следующий boost через 24 часа
+
+### ⏭️ Пропуск (менее 24ч)
+```
+Резюме уже было поднято недавно
+```
+**Действия:**
+- Прочитать `state/last-boost.txt`
+- Вычислить когда следующий boost
+- Лог: `[BOOST] Пропуск до HH:MM завтра`
+
+### ❌ Ошибка
+```
+Требуется авторизация
+```
+**Действия:**
+- Запустить `hh-applicant-tool authorize`
+- Повторить boost
+- Лог: `[BOOST] Ошибка: требуется авторизация`
+
+## Вариации промпта для разных ситуаций
+
+### Ситуация 1: Первый запуск дня
+```
+Сейчас утро (09:00-11:00). Нужно поднять резюме в топ на весь рабочий день.
+
+Команда:
+hh-applicant-tool boost-resume
+
+После успеха:
+- Записать timestamp в state/last-boost.txt
+- Продолжить к откликам на вакансии
+```
+
+### Ситуация 2: Повторный запуск (проверка)
+```
+Проверить можно ли делать boost:
+
+1. Прочитать state/last-boost.txt
+2. Вычислить разницу в часах
+3. Если >= 24 → запустить boost
+4. Если < 24 → записать время следующего доступного boost
+
+Команда проверки:
+cat state/last-boost.txt && date +%s
+```
+
+### Ситуация 3: После ошибки авторизации
+```
+Boost не выполнился — требуется авторизация.
+
+План:
+1. hh-applicant-tool authorize (интерактивно)
+2. Проверить whoami
+3. Повторить boost-resume
+4. Если успех → записать timestamp
+
+Команды:
+hh-applicant-tool authorize
+hh-applicant-tool whoami
+hh-applicant-tool boost-resume
+```
+
+### Ситуация 4: Несколько резюме
+```
+У пользователя несколько резюме. Нужно поднять все активные.
+
+Команды:
+hh-applicant-tool list-resumes  # Получить список
+hh-applicant-tool boost-resume --resume-id {{ID}}  # Для каждого
+```
+
+## Скрипт: scripts/boost-resume.sh
+```bash
+#!/bin/bash
+# Boost resume с проверкой 24 часов
+
+STATE_FILE="state/last-boost.txt"
+LOG_FILE="logs/boost-$(date +%Y-%m-%d).log"
+
+# Чтение последнего boost
+if [ -f "$STATE_FILE" ]; then
+    LAST_BOOST=$(cat "$STATE_FILE")
+    NOW=$(date +%s)
+    DIFF=$((NOW - LAST_BOOST))
+    HOURS=$((DIFF / 3600))
+    
+    if [ $HOURS -lt 24 ]; then
+        NEXT_BOOST=$((LAST_BOOST + 86400))
+        NEXT_TIME=$(date -d "@$NEXT_BOOST" "+%H:%M")
+        echo "⏭️ Пропуск boost: прошло ${HOURS}ч. Следующий в ${NEXT_TIME}" | tee -a "$LOG_FILE"
+        exit 0
+    fi
+fi
+
+# Запуск boost
+echo "🚀 Запуск boost-resume..." | tee -a "$LOG_FILE"
+RESULT=$(hh-applicant-tool boost-resume 2>&1)
+
+if echo "$RESULT" | grep -q "успешно\|поднято\|top"; then
+    echo "✅ Boost выполнен успешно" | tee -a "$LOG_FILE"
+    date +%s > "$STATE_FILE"
+    echo "⏰ Следующий boost доступен через 24 часа" | tee -a "$LOG_FILE"
+else
+    echo "❌ Ошибка boost: $RESULT" | tee -a "$LOG_FILE"
+    
+    # Проверка на авторизацию
+    if echo "$RESULT" | grep -q "авторизация\|token\|auth"; then
+        echo "🔐 Требуется авторизация" | tee -a "$LOG_FILE"
+        echo "Запустите: hh-applicant-tool authorize" | tee -a "$LOG_FILE"
+    fi
+fi
+```
+
+## Интеграция в workflow
+```
+Ежедневный цикл:
+09:00 → boost-resume (если прошло 24ч)
+09:05 → apply-vacancies (80-100 откликов)
+09:15 → chat-responses (ответы работодателям)
+09:20 → pause (30-60 мин)
+10:20 → итерация 2 (только чаты + follow-up)
+...
+```
+
+## Метрики для отслеживания
+- Количество boost за неделю (цель: 7)
+- Просмотры резюме после boost (цель: +50-100 в день)
+- Отклики после boost (цель: +20-30% к конверсии)
+
+## Логирование
+```json
+{
+  "timestamp": "2026-06-24T09:00:00+03:00",
+  "action": "boost-resume",
+  "result": "success",
+  "last_boost": "2026-06-23T10:00:00+03:00",
+  "hours_since_last": 23,
+  "next_boost_available": "2026-06-25T09:00:00+03:00",
+  "resume_views_before": 92,
+  "resume_views_after": 132
+}
+```

@@ -114,19 +114,43 @@ CLI и веб-админка теперь читают **одни и те же**
 
 ### Ollama (локально, бесплатно, без интернета)
 
+**Важно:** Ollama поддерживает два режима API:
+
+1. **OpenAI-совместимый режим** (рекомендуется для этого проекта):
+   ```bash
+   ollama serve
+   ollama pull qwen2.5:7b
+   ```
+   ```json
+   "base_url": "http://localhost:11434/v1/chat/completions",
+   "model": "qwen2.5:7b",
+   "api_key": "ollama"
+   ```
+
+2. **Нативный режим Ollama** (альтернатива):
+   ```json
+   "base_url": "http://localhost:11434/api/generate",
+   "model": "qwen2.5:7b"
+   ```
+   ⚠️ Нативный режим требует изменения кода клиента — используйте OpenAI-совместимый режим.
+
+**Проверка работоспособности:**
 ```bash
-ollama serve
-ollama pull qwen2.5:7b
+# Убедитесь, что Ollama запущен
+ollama list
+
+# Проверьте, что модель установлена
+ollama ls | grep qwen2.5
+
+# Проверьте API endpoint
+curl http://localhost:11434/api/tags
 ```
 
-```json
-"base_url": "http://localhost:11434/v1/chat/completions",
-"model": "qwen2.5:7b",
-"api_key": "ollama"
-```
-
-> Для капчи на Ollama нужна vision-модель (напр. `llama3.2-vision`); иначе оставьте
-> для капчи облачную модель, а письма/фильтр гоните локально.
+**Troubleshooting 404 ошибок:**
+- Убедитесь, что модель установлена: `ollama pull qwen2.5:7b`
+- Проверьте, что Ollama сервер запущен: `ollama serve`
+- Используйте полный URL: `http://localhost:11434/v1/chat/completions` (не сокращённый)
+- Для капчи нужна vision-модель (напр. `llama3.2-vision`); иначе оставьте для капчи облачную модель, а письма/фильтр гоните локально.
 
 Подойдёт **любой** OpenAI-совместимый сервер (LM Studio, vLLM, llama.cpp `--api`, и т.д.).
 

@@ -85,6 +85,9 @@ docker/
 # Vim
 .vim/
 
+# Nessy CLI local settings (keep output-language.md if needed)
+.nessy/settings.json
+
 # Содержимое config кроме .gitkeep игнорируется
 /config/*
 !/config/.gitkeep

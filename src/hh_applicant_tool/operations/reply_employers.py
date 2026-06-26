@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import random
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -130,6 +131,12 @@ class Operation(BaseOperation):
                 self.reply_ai = tool.get_cover_letter_ai(load_prompt(args.system_prompt))
             except ValueError:
                 pass
+        # Предупреждение, если AI запрошен, но не настроен
+        if self.reply_ai is None and args.use_ai:
+            logger.warning(
+                "AI запрошен (--use-ai), но ни 'openai_reply', ни 'openai_cover_letter' "
+                "не настроены в конфиге. Используются шаблонные сообщения."
+            )
         self.period = args.period
 
         logger.debug(f"{self.reply_message = }")
@@ -300,6 +307,8 @@ class Operation(BaseOperation):
                                 ai_query
                             )
                             logger.debug(f"AI message: {send_message}")
+                            # Rate limiting: 1 second between AI requests
+                            time.sleep(1.0)
                         except AIError as ex:
                             logger.warning(
                                 f"Ошибка AI для чата {nid}: {ex}"

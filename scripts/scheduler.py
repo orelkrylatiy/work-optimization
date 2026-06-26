@@ -18,7 +18,7 @@ import logging
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -52,8 +52,9 @@ def get_next_run_time(hour: int, minute: int) -> datetime:
     now = datetime.now()
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
-        # Уже прошло сегодня, запускаем завтра
-        target = target.replace(day=target.day + 1)
+        # Уже прошло сегодня, запускаем завтра (timedelta корректно переходит
+        # через конец месяца/года — replace(day=day+1) на 31-е число падал)
+        target += timedelta(days=1)
     return target
 
 

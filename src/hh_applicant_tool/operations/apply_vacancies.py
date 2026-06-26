@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from ..api import datatypes
 from ..main import BaseNamespace, BaseOperation
+from ..utils.misc import load_prompt
 from ..storage.repositories.errors import RepositoryError
 from ._apply_vacancies_ai import ApplyVacanciesAIMixin
 from ._apply_vacancies_apply_flow import ApplyVacanciesApplyFlowMixin
@@ -367,6 +368,9 @@ class Operation(
     ) -> None:
         self.tool = tool
         self._args = args
+        # Промпты можно задать как инлайн-строкой, так и путём к файлу (@file или путь)
+        args.system_prompt = load_prompt(args.system_prompt)
+        args.message_prompt = load_prompt(args.message_prompt)
         self.cover_letter = (
             args.letter_file.read_text(encoding="utf-8", errors="ignore")
             if args.letter_file

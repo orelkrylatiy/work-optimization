@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hh_applicant_tool import constants
+from hh_applicant_tool.ai import ChatOpenAI, OpenAIError
 from hh_applicant_tool.api import errors as api_errors
 from hh_applicant_tool.storage.utils import init_db
 from hh_applicant_tool.utils.date import parse_api_datetime
@@ -975,6 +976,65 @@ def get_logs(profile: str = Query("default"), lines: int = Query(200)):
 # Routes: generate cover letter
 # ---------------------------------------------------------------------------
 
+# --- Единый AI-слой ----------------------------------------------------------
+# Админка и CLI используют один и тот же клиент (ChatOpenAI) и одни и те же
+# секции config.json. Это убирает прежний рассинхрон, когда CLI читал
+# `openai_cover_letter`, а админка — `openai`.
+
+def _normalize_chat_url(base_url: str | None) -> str:
+    """Приводит base_url к полному endpoint'у /chat/completions.
+
+    Терпит оба формата: короткий ('.../v1') и полный ('.../v1/chat/completions').
+    """
+    url = (base_url or constants.OPENAI_DEFAULT_BASE_URL).rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"
+    return url
+
+
+def _resolve_ai_section(profile: str, sections: list[str]) -> dict[str, Any]:
+    """Находит первую настроенную AI-секцию из списка приоритетов.
+
+    `sections` — порядок поиска, напр. ['openai_reply', 'openai_cover_letter', 'openai'].
+    Последний 'openai' оставлен для обратной совместимости со старым конфигом.
+    """
+    cfg_path = _config_path(profile)
+    if not cfg_path.exists():
+        raise HTTPException(404, "config.json не найден — нет доступа к AI")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    for name in sections:
+        section = cfg.get(name) or {}
+        if section.get("api_key"):
+            return section
+    raise HTTPException(
+        400,
+        f"AI не настроен: добавьте секцию '{sections[0]}' с 'api_key' и 'base_url' в config.json. "
+        "См. docs/LLM_SETUP.md",
+    )
+
+
+def _make_ai_client(
+    profile: str,
+    sections: list[str],
+    system_prompt: str,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 600,
+) -> ChatOpenAI:
+    """Собирает ChatOpenAI из config.json — с retry, rate-limit и таймаутами."""
+    c = _resolve_ai_section(profile, sections)
+    return ChatOpenAI(
+        api_key=c["api_key"],
+        base_url=_normalize_chat_url(c.get("base_url")),
+        model=c.get("model") or constants.OPENAI_DEFAULT_MODEL,
+        system_prompt=system_prompt,
+        temperature=c.get("temperature", temperature),
+        max_completion_tokens=c.get("max_completion_tokens", max_tokens),
+        rate_limit=c.get("rate_limit", 40),
+    )
+
+
 class LetterRequest(BaseModel):
     vacancy_name: str
     vacancy_description: str = ""
@@ -986,70 +1046,34 @@ class LetterRequest(BaseModel):
 
 @app.post("/api/generate-letter")
 def generate_letter(body: LetterRequest):
-    cfg_path = _config_path(body.profile)
-    if not cfg_path.exists():
-        raise HTTPException(404, "config.json не найден — нет доступа к OpenAI ключу")
+    system_prompt = (
+        "Ты опытный HR-специалист и помогаешь писать сопроводительные письма для откликов на вакансии. "
+        "Пиши живо, искренне, без шаблонных фраз. Письмо должно быть персонализировано под вакансию. "
+        "Объём: 3-4 абзаца, не более 250 слов. Язык: русский."
+    )
+    user_prompt = (
+        f"Напиши сопроводительное письмо для отклика на вакансию.\n\n"
+        f"Вакансия: {body.vacancy_name}\n"
+        f"Работодатель: {body.employer_name or 'не указан'}\n"
+        f"Моё резюме / должность: {body.resume_title or 'не указана'}\n"
+    )
+    if body.vacancy_description:
+        user_prompt += f"\nОписание вакансии:\n{body.vacancy_description[:1500]}\n"
+    if body.extra:
+        user_prompt += f"\nДополнительные пожелания: {body.extra}\n"
 
+    client = _make_ai_client(
+        body.profile,
+        ["openai_cover_letter", "openai"],
+        system_prompt,
+        temperature=0.8,
+        max_tokens=600,
+    )
     try:
-        cfg = _load_and_validate_config(cfg_path)
-    except ValidationError as ex:
-        raise HTTPException(400, f"Некорректный config.json: {ex}") from ex
-
-    openai_cfg = cfg.get("openai") or {}
-    api_key = openai_cfg.get("api_key")
-    if not api_key:
-        raise HTTPException(400, "OpenAI API key не настроен в config.json")
-
-    base_url = openai_cfg.get("base_url", constants.OPENAI_DEFAULT_BASE_URL)
-    model = openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL)
-
-    try:
-        import urllib.request
-        import urllib.error
-
-        system_prompt = (
-            "Ты опытный HR-специалист и помогаешь писать сопроводительные письма для откликов на вакансии. "
-            "Пиши живо, искренне, без шаблонных фраз. Письмо должно быть персонализировано под вакансию. "
-            "Объём: 3-4 абзаца, не более 250 слов. Язык: русский."
-        )
-
-        user_prompt = (
-            f"Напиши сопроводительное письмо для отклика на вакансию.\n\n"
-            f"Вакансия: {body.vacancy_name}\n"
-            f"Работодатель: {body.employer_name or 'не указан'}\n"
-            f"Моё резюме / должность: {body.resume_title or 'не указана'}\n"
-        )
-        if body.vacancy_description:
-            user_prompt += f"\nОписание вакансии:\n{body.vacancy_description[:1500]}\n"
-        if body.extra:
-            user_prompt += f"\nДополнительные пожелания: {body.extra}\n"
-
-        payload = json.dumps({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.8,
-            "max_tokens": 600,
-        }).encode()
-
-        req = urllib.request.Request(
-            f"{base_url.rstrip('/')}/chat/completions",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.load(resp)
-
-        letter = result["choices"][0]["message"]["content"]
-        return {"letter": letter}
-
-    except Exception as e:
-        raise HTTPException(500, f"Ошибка OpenAI: {e}")
+        letter = client.complete(user_prompt)
+    except OpenAIError as ex:
+        raise HTTPException(502, f"Ошибка AI: {ex}") from ex
+    return {"letter": letter}
 
 
 # ---------------------------------------------------------------------------
@@ -1420,38 +1444,6 @@ def review_negotiations(
     }
 
 
-def _call_openai(cfg_path: Path, system: str, user: str, max_tokens: int = 400) -> str:
-    """Универсальный хелпер для вызова OpenAI из config.json профиля."""
-    import urllib.request as _urlreq
-
-    if not cfg_path.exists():
-        raise HTTPException(404, "config.json не найден")
-    with open(cfg_path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    openai_cfg = cfg.get("openai") or {}
-    api_key = openai_cfg.get("api_key")
-    if not api_key:
-        raise HTTPException(400, "OpenAI API key не настроен")
-
-    payload = json.dumps({
-        "model": openai_cfg.get("model", constants.OPENAI_DEFAULT_MODEL),
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0.7,
-        "max_tokens": max_tokens,
-    }).encode()
-    req = _urlreq.Request(
-        f"{openai_cfg.get('base_url', constants.OPENAI_DEFAULT_BASE_URL).rstrip('/')}/chat/completions",
-        data=payload,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-    )
-    with _urlreq.urlopen(req, timeout=30) as r:
-        result = json.load(r)
-    return result["choices"][0]["message"]["content"]
-
-
 class ReplyRequest(BaseModel):
     message: str = ""
     use_ai: bool = False
@@ -1506,12 +1498,17 @@ def send_reply(neg_id: int, body: ReplyRequest):
             user_parts.append(f"\nИстория переписки:\n{history_text}")
         user_parts.append("\nНапиши мой следующий ответ работодателю.")
 
+        client = _make_ai_client(
+            body.profile,
+            ["openai_reply", "openai_cover_letter", "openai"],
+            system,
+            temperature=0.7,
+            max_tokens=400,
+        )
         try:
-            text = _call_openai(_config_path(body.profile), system, "\n".join(user_parts))
-        except HTTPException:
-            raise
-        except Exception as ex:
-            raise HTTPException(500, f"Ошибка OpenAI: {ex}") from ex
+            text = client.complete("\n".join(user_parts))
+        except OpenAIError as ex:
+            raise HTTPException(502, f"Ошибка AI: {ex}") from ex
 
     if not text:
         raise HTTPException(400, "Сообщение не может быть пустым")

@@ -8,7 +8,7 @@ from .date import (
     parse_api_datetime,
     try_parse_datetime,
 )
-from .misc import calc_hash, print_err
+from .misc import calc_hash, load_prompt, print_err
 from .string import bool2str, list2str, rand_text, shorten
 from .terminal import setup_terminal
 
@@ -25,6 +25,7 @@ __all__ = [
     "bool2str",
     "list2str",
     "calc_hash",
+    "load_prompt",
     "generate_android_useragent",
     "setup_terminal",
     "print_err",

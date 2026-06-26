@@ -89,6 +89,10 @@ docker/
 /config/*
 !/config/.gitkeep
 
+# Локальные промпты с личными данными (контакты, ставка) — не коммитятся
+prompts/*.local.txt
+prompts/*.local.md
+
 Session.vim
 
 # Claude Code local settings

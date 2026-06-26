@@ -6,7 +6,11 @@
       "Bash(rm *)",
       "Bash(pip install *)",
       "Bash(curl *)",
-      "Bash(chmod *)"
+      "Bash(chmod *)",
+      "Bash(timeout *)",
+      "Bash(which *)",
+      "Bash(ollama *)",
+      "Bash(tail *)"
     ]
   },
   "$version": 4

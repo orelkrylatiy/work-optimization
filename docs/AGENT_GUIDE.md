@@ -56,16 +56,16 @@ hh-applicant-tool apply-vacancies \
 
 # 4. Ответить работодателям (персонально!)
 hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @wavemax6" \
+  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
   --period 2
 ```
 
 ### 3. Контекст проекта
 
-**Пользователь:** Максим Агофонов, Frontend-разработчик (React/TypeScript/Redux)  
-**Опыт:** 5+ лет (Selecty, РСХБ-Интех)  
+**Пользователь:** Имя Фамилия, Frontend-разработчик (React/TypeScript/Redux)  
+**Опыт:** 5+ лет (прежние компании)  
 **Локация:** Москва, готов к удалёнке  
-**Контакты:** Telegram @wavemax6, vertolet333i@gmail.com
+**Контакты:** Telegram @your_telegram, your-email@example.com
 
 **Текущая стратегия:**
 - Откликов в день: 80-120
@@ -133,7 +133,7 @@ hh-applicant-tool apply-vacancies \
 ```bash
 # Шаблонное сообщение во все чаты
 hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @wavemax6" \
+  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
   --period 2
 
 # Интерактивный режим (персонально)
@@ -276,9 +276,9 @@ hh-applicant-tool authorize
 
 ## 📞 Контакты пользователя
 
-- **Telegram:** @wavemax6
-- **Email:** vertolet333i@gmail.com
-- **HH.ru:** https://hh.ru/resume/9ae6f847ff0f917b220039ed1f4373635a4471
+- **Telegram:** @your_telegram
+- **Email:** your-email@example.com
+- **HH.ru:** https://hh.ru/resume/YOUR_RESUME_ID
 
 **Важно:** При ответах работодателям всегда упоминать Telegram для оперативной связи.
 
@@ -341,6 +341,9 @@ Content-Type: application/json
 ```
 
 Если `message` пустой и `use_ai=true`, система сама построит ответ по истории переписки.
+
+> AI-ответы используют секцию `openai_reply` из `config.json` (если её нет — `openai_cover_letter`).
+> Настройка ключей: [LLM_SETUP.md](LLM_SETUP.md).
 
 ## Что Пускать По Автомату
 

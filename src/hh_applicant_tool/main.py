@@ -354,6 +354,9 @@ class HHApplicantTool(MegaTool):
     def get_cover_letter_ai(self, system_prompt: str) -> ai.ChatOpenAI:
         return self._init_ai_client(system_prompt, purpose="cover_letter")
 
+    def get_reply_ai(self, system_prompt: str) -> ai.ChatOpenAI:
+        return self._init_ai_client(system_prompt, purpose="reply")
+
     def get_vacancy_filter_ai(self, system_prompt: str) -> ai.ChatOpenAI:
         return self._init_ai_client(system_prompt, purpose="vacancy_filter")
 
@@ -364,6 +367,7 @@ class HHApplicantTool(MegaTool):
 
         config_sections = {
             "cover_letter": "openai_cover_letter",
+            "reply": "openai_reply",
             "vacancy_filter": "openai_vacancy_filter",
             "captcha": "openai_captcha",
         }

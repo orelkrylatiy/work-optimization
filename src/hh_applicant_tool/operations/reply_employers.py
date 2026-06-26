@@ -11,6 +11,7 @@ from ..ai.base import AIError
 from ..api import ApiError, datatypes
 from ..main import BaseNamespace, BaseOperation
 from ..utils.date import parse_api_datetime
+from ..utils.misc import load_prompt
 from ..utils.string import rand_text
 
 if TYPE_CHECKING:
@@ -115,8 +116,20 @@ class Operation(BaseOperation):
         self.only_invitations = args.only_invitations
         self.json_output = getattr(args, 'json_output', False)
 
-        self.message_prompt = args.message_prompt
-        self.cover_letter_ai = (tool.get_cover_letter_ai(args.system_prompt) if args.use_ai else None)
+        # Промпты можно задать как инлайн-строкой, так и путём к файлу (@file или путь)
+        self.message_prompt = load_prompt(args.message_prompt)
+        # Используем get_reply_ai, который читает секцию openai_reply (или fallback на openai_cover_letter)
+        self.reply_ai = (
+            tool.get_reply_ai(load_prompt(args.system_prompt))
+            if args.use_ai
+            else None
+        )
+        # Fallback: если openai_reply не настроен, пробуем openai_cover_letter
+        if self.reply_ai is None and args.use_ai:
+            try:
+                self.reply_ai = tool.get_cover_letter_ai(load_prompt(args.system_prompt))
+            except ValueError:
+                pass
         self.period = args.period
 
         logger.debug(f"{self.reply_message = }")
@@ -166,13 +179,15 @@ class Operation(BaseOperation):
         for negotiation in self.tool.get_negotiations():
             try:
                 results["processed"] += 1
-                
+
                 # try:
                 #     self.tool.storage.negotiations.save(negotiation)
                 # except RepositoryError as e:
                 #     logger.exception(e)
 
-                if not (resume := resume_map.get(negotiation["resume"]["id"])):
+                # Пропуск переговоров без резюме (например, работодатель написал первым)
+                resume_data = negotiation.get("resume")
+                if not resume_data or not (resume := resume_map.get(resume_data.get("id"))):
                     results["skipped"] += 1
                     continue
 
@@ -273,7 +288,7 @@ class Operation(BaseOperation):
                             rand_text(self.reply_message) % placeholders
                         )
                         logger.debug(f"Template message: {send_message}")
-                    elif self.cover_letter_ai:
+                    elif self.reply_ai:
                         try:
                             ai_query = (
                                 f"Вакансия: {placeholders['vacancy_name']}\n"
@@ -281,13 +296,13 @@ class Operation(BaseOperation):
                                 + "\n".join(message_history[-10:])
                                 + f"\n\nИнструкция: {self.message_prompt}"
                             )
-                            send_message = self.cover_letter_ai.complete(
+                            send_message = self.reply_ai.complete(
                                 ai_query
                             )
                             logger.debug(f"AI message: {send_message}")
                         except AIError as ex:
                             logger.warning(
-                                f"Ошибка OpenAI для чата {nid}: {ex}"
+                                f"Ошибка AI для чата {nid}: {ex}"
                             )
                             results["errors"].append({
                                 "negotiation_id": nid,

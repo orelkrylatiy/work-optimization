@@ -20,15 +20,15 @@ hh-applicant-tool authorize
 
 ## 📊 Контекст
 
-**Пользователь:** Максим Агофонов  
+**Пользователь:** Имя Фамилия  
 **Роль:** Frontend-разработчик (React/TypeScript/Redux)  
-**Опыт:** 5+ лет (Selecty, РСХБ-Интех)  
+**Опыт:** 5+ лет (прежние компании)  
 **Локация:** Москва, удалёнка OK  
 **Контакты:** 
-- Telegram: **@wavemax6** (основной)
-- Email: vertolet333i@gmail.com
+- Telegram: **@your_telegram** (основной)
+- Email: your-email@example.com
 
-**Резюме:** https://hh.ru/resume/9ae6f847ff0f917b220039ed1f4373635a4471
+**Резюме:** https://hh.ru/resume/YOUR_RESUME_ID
 
 ---
 
@@ -76,7 +76,7 @@ hh-applicant-tool apply-vacancies \
 ```bash
 # Шаблонное сообщение (быстро)
 hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @wavemax6" \
+  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
   --period 2
 
 # Интерактивный режим (персонально)
@@ -98,7 +98,7 @@ hh-applicant-tool reply-employers
 
 ## ⚠️ Важно
 
-1. **Всегда упоминать Telegram @wavemax6** в ответах
+1. **Всегда упоминать Telegram @your_telegram** в ответах
 2. **Dry-run перед live** запуском откликов
 3. **Исключать:** junior, стажёры, bitrix, web3, crypto, blockchain
 4. **Лимит HH:** ~100-150 откликов в сутки

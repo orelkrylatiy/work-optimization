@@ -20,7 +20,7 @@ hh-applicant-tool apply-vacancies --search "Frontend разработчик" --l
 hh-applicant-tool apply-vacancies --search "Frontend разработчик" --letter-file ./letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests
 
 # Ответы работодателям
-hh-applicant-tool reply-employers -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @wavemax6" --period 2
+hh-applicant-tool reply-employers -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" --period 2
 ```
 
 **📚 Полная документация:** [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
@@ -139,13 +139,17 @@ hh-applicant-tool log -f
 
 ## AI
 
-AI не обязателен. Он нужен только если ты хочешь:
+AI не обязателен и подключается отдельными секциями в `config.json`. Он нужен, если хочешь:
 
-- генерировать сопроводительные письма;
+- генерировать сопроводительные письма (`apply-vacancies --ai`);
+- генерировать персональные ответы работодателям (`reply-employers --use-ai`, инбокс админки);
 - фильтровать вакансии через AI;
 - распознавать капчу через vision-модель.
 
-Нужен OpenAI-compatible API:
+Подойдёт любой OpenAI-совместимый endpoint: **OpenAI, OpenRouter, Ollama** и др.
+CLI и админка используют один и тот же клиент и одни и те же секции конфига.
+
+Минимальный пример (письма):
 
 ```json
 {
@@ -153,16 +157,13 @@ AI не обязателен. Он нужен только если ты хоч�
     "api_key": "sk-...",
     "base_url": "https://api.openai.com/v1/chat/completions",
     "model": "gpt-4o-mini"
-  },
-  "openai_vacancy_filter": {
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4o-mini"
   }
 }
 ```
 
-Подойдут OpenAI, OpenRouter, Ollama и другие совместимые endpoint’ы.
+**📖 Полное руководство:** [docs/LLM_SETUP.md](docs/LLM_SETUP.md) — все секции
+(`openai_cover_letter`, `openai_vacancy_filter`, `openai_captcha`, `openai_reply`),
+провайдеры, локальный Ollama и troubleshooting.
 
 ## Web Admin / Agent Layer
 
@@ -208,6 +209,9 @@ AI не обязателен. Он нужен только если ты хоч�
 
 ## Документация
 
+- [LLM Setup](docs/LLM_SETUP.md) — подключение AI
 - [Agent Guide](docs/AGENT_GUIDE.md)
 - [Autonomous Agent Workflow](docs/AUTONOMOUS_AGENT_WORKFLOW.md)
+- [Scheduling](docs/SCHEDULING.md) — автозапуск по cron
+- [Deployment](docs/DEPLOYMENT.md)
 - [Docs Index](docs/README.md)

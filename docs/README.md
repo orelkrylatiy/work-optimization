@@ -8,13 +8,17 @@
 |------|----------|
 | **[QUICKSTART.md](QUICKSTART.md)** | ⭐ Быстрый старт для агента — читать первым! |
 | **[AGENT_GUIDE.md](AGENT_GUIDE.md)** | 📚 Полное руководство агента — команды, API, troubleshooting |
+| **[LLM_SETUP.md](LLM_SETUP.md)** | 🧠 Подключение AI — провайдеры, секции конфига, troubleshooting |
 | [AUTONOMOUS_AGENT_WORKFLOW.md](AUTONOMOUS_AGENT_WORKFLOW.md) | Ограниченный автономный контур |
+| [SCHEDULING.md](SCHEDULING.md) | Автозапуск по cron / Python scheduler |
 | [AUTHORIZATION_INIT.md](AUTHORIZATION_INIT.md) | Как устроена авторизация и auto-auth поведение |
 
 ## Runtime И Operations
 
 - `AGENT_GUIDE.md` — как использовать агент поверх инструмента
+- `LLM_SETUP.md` — подключение AI (OpenAI / OpenRouter / Ollama)
 - `AUTONOMOUS_AGENT_WORKFLOW.md` — ограниченный автономный контур
+- `SCHEDULING.md` — автозапуск по cron
 - `AUTHORIZATION_INIT.md` — как устроена авторизация и auto-auth поведение
 - `DEVOPS.md` — подробный DevOps-гайд
 - `DEVOPS_CHEATSHEET.md` — краткая DevOps-шпаргалка

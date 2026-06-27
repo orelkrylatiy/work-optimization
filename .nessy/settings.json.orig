@@ -9,7 +9,10 @@
       "Bash(chmod *)",
       "Bash(timeout *)",
       "Bash(which *)",
-      "Bash(ollama *)"
+      "Bash(ollama *)",
+      "Bash(tail *)",
+      "Bash(true)",
+      "Bash(sleep *)"
     ]
   },
   "$version": 4

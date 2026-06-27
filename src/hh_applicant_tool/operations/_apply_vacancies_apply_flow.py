@@ -187,8 +187,8 @@ class ApplyVacanciesApplyFlowMixin:
 
         if self.cover_letter_ai:
             msg = self.message_prompt + "\n\n"
-            msg += "Название вакансии: " + message_placeholders["vacancy_name"]
-            msg += "Мое резюме: " + message_placeholders["resume_title"]
+            msg += "Вакансия: " + message_placeholders["vacancy_name"] + "\n"
+            msg += "Моё резюме: " + message_placeholders["resume_title"]
             logger.debug("prompt: %s", msg)
             letter = self.cover_letter_ai.complete(msg)
         else:

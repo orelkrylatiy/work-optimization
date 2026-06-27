@@ -10,7 +10,10 @@
       "Bash(timeout *)",
       "Bash(which *)",
       "Bash(ollama *)",
-      "Bash(tail *)"
+      "Bash(tail *)",
+      "Bash(true)",
+      "Bash(sleep *)",
+      "Bash(pip show *)"
     ]
   },
   "$version": 4

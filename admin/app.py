@@ -1477,23 +1477,35 @@ def send_reply(neg_id: int, body: ReplyRequest):
 
         # Форматируем историю для AI
         history_text = ""
+        last_own_message = ""
+        last_employer_message = ""
         if history:
             lines = []
-            for m in history[-10:]:   # последние 10 сообщений
+            for m in history[-20:]:
                 author = m.get("author") or {}
                 who = "Работодатель" if author.get("participant_type") == "employer" else "Я"
                 msg_text = (m.get("text") or "").strip()
                 if msg_text:
                     lines.append(f"{who}: {msg_text}")
+                    if who == "Я":
+                        last_own_message = msg_text
+                    else:
+                        last_employer_message = msg_text
             history_text = "\n".join(lines)
 
         system = (
             "Ты — соискатель, ищущий работу на hh.ru. "
             "Отвечай на сообщения HR вежливо, профессионально, кратко (2-4 предложения). "
             "Учитывай контекст переписки. Язык: русский. "
-            "Не используй шаблонные фразы — пиши живо."
+            "Не используй шаблонные фразы — пиши живо. "
+            "Не повторяй уже отправленные кандидатом сообщения и не дублируй просьбы "
+            "в духе 'рассмотрите резюме', если это уже было сказано."
         )
         user_parts = [f"Вакансия: «{body.vacancy_name}»", f"Компания: «{body.employer_name}»"]
+        if last_own_message:
+            user_parts.append(f"Последнее сообщение кандидата: {last_own_message}")
+        if last_employer_message:
+            user_parts.append(f"Последнее сообщение работодателя: {last_employer_message}")
         if history_text:
             user_parts.append(f"\nИстория переписки:\n{history_text}")
         user_parts.append("\nНапиши мой следующий ответ работодателю.")

@@ -12,8 +12,72 @@ logger = logging.getLogger(__package__)
 
 
 class ApplyVacanciesAIMixin:
+    def _get_full_vacancy(self, vacancy_id: str | int) -> dict[str, Any]:
+        vacancy_key = str(vacancy_id)
+        if vacancy_key in self._vacancy_context_cache:
+            return self._vacancy_context_cache[vacancy_key]
+
+        full_vacancy = self.api_client.get(f"/vacancies/{vacancy_id}")
+        self._vacancy_context_cache[vacancy_key] = full_vacancy
+        return full_vacancy
+
     def _get_full_resume(self, resume_id: str) -> dict[str, Any]:
         return self.api_client.get(f"/resumes/{resume_id}")
+
+    def _build_cover_letter_context(
+        self,
+        vacancy: dict[str, Any],
+        resume: dict[str, Any],
+    ) -> str:
+        parts: list[str] = []
+
+        vacancy_id = vacancy.get("id")
+        full_vacancy = self._get_full_vacancy(vacancy_id) if vacancy_id else vacancy
+        employer = full_vacancy.get("employer") or vacancy.get("employer") or {}
+        salary = full_vacancy.get("salary") or vacancy.get("salary") or {}
+
+        if vacancy_name := full_vacancy.get("name") or vacancy.get("name"):
+            parts.append(f"Вакансия: {vacancy_name}")
+        if employer_name := employer.get("name"):
+            parts.append(f"Компания: {employer_name}")
+        if area := (full_vacancy.get("area") or {}).get("name"):
+            parts.append(f"Локация: {area}")
+        if employment := (full_vacancy.get("employment") or {}).get("name"):
+            parts.append(f"Формат занятости: {employment}")
+        if schedule := (full_vacancy.get("schedule") or {}).get("name"):
+            parts.append(f"График: {schedule}")
+        if experience := (full_vacancy.get("experience") or {}).get("name"):
+            parts.append(f"Опыт: {experience}")
+        if salary:
+            parts.append(
+                "Зарплата: "
+                f"от {salary.get('from') or ''} "
+                f"до {salary.get('to') or ''} "
+                f"{salary.get('currency') or ''}".strip()
+            )
+
+        description = strip_tags(full_vacancy.get("description") or "")
+        if description:
+            parts.append(f"Описание вакансии:\n{description[:4000]}")
+
+        key_skills = full_vacancy.get("key_skills") or []
+        if key_skills:
+            parts.append(
+                "Ключевые навыки вакансии: "
+                + ", ".join(
+                    skill["name"] for skill in key_skills if skill.get("name")
+                )
+            )
+
+        resume_id = resume.get("id")
+        if resume_title := resume.get("title"):
+            parts.append(f"Название моего резюме: {resume_title}")
+        if resume_id:
+            resume_summary = self._analyze_resume_heavy(resume)
+            if resume_summary:
+                parts.append(f"Контекст моего резюме:\n{resume_summary[:4000]}")
+
+        return "\n\n".join(parts)
 
     def _analyze_resume_heavy(self, resume: dict[str, Any]) -> str:
         resume_id = resume.get("id")
@@ -211,7 +275,7 @@ class ApplyVacanciesAIMixin:
     def _is_vacancy_suitable_heavy(self, vacancy: dict[str, Any]) -> bool:
         full_vacancy = None
         if vacancy.get("id"):
-            full_vacancy = self.api_client.get(f"/vacancies/{vacancy['id']}")
+            full_vacancy = self._get_full_vacancy(vacancy["id"])
 
         vacancy_info = self._build_vacancy_context(
             vacancy,

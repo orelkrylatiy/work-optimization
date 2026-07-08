@@ -180,15 +180,21 @@ class ApplyVacanciesApplyFlowMixin:
     def _build_cover_letter(
         self,
         vacancy: dict[str, Any],
+        resume: datatypes.Resume,
         message_placeholders: dict[str, str],
     ) -> str:
         if not (self.force_message or vacancy.get("response_letter_required")):
             return ""
 
         if self.cover_letter_ai:
+            context = self._build_cover_letter_context(vacancy, resume)
             msg = self.message_prompt + "\n\n"
-            msg += "Вакансия: " + message_placeholders["vacancy_name"] + "\n"
-            msg += "Моё резюме: " + message_placeholders["resume_title"]
+            msg += (
+                "Напиши уникальное сопроводительное письмо под эту конкретную вакансию. "
+                "Не ограничивайся повторением названия вакансии. Используй только факты из контекста, "
+                "не выдумывай опыт и не используй placeholder'ы.\n\n"
+            )
+            msg += context
             logger.debug("prompt: %s", msg)
             letter = self.cover_letter_ai.complete(msg)
         else:
@@ -361,7 +367,11 @@ class ApplyVacanciesApplyFlowMixin:
                     seen_employers,
                     site_emails,
                 )
-                letter = self._build_cover_letter(vacancy, message_placeholders)
+                letter = self._build_cover_letter(
+                    vacancy,
+                    resume,
+                    message_placeholders,
+                )
                 do_apply = self._send_vacancy_response(vacancy, resume["id"], letter)
                 self._send_vacancy_email_if_needed(
                     vacancy,

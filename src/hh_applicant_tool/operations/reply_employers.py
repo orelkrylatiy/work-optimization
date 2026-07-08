@@ -161,6 +161,40 @@ class Operation(BaseOperation):
         if self.json_output:
             print(json.dumps(results, ensure_ascii=False, indent=2))
 
+    def _build_ai_reply_query(
+        self,
+        *,
+        vacancy_name: str,
+        resume_title: str,
+        message_history: list[str],
+    ) -> str:
+        last_own_message = next(
+            (msg for msg in reversed(message_history) if "] Я:" in msg),
+            "",
+        )
+        last_employer_message = next(
+            (msg for msg in reversed(message_history) if "] Работодатель:" in msg),
+            "",
+        )
+
+        prompt_parts = [
+            f"Вакансия: {vacancy_name}",
+            f"Активное резюме: {resume_title}",
+            (
+                "Внимательно проанализируй всю историю ниже. "
+                "Не повторяй уже отправленные кандидатом сообщения и не дублируй просьбы "
+                "в духе 'посмотрите резюме', если это уже было сказано."
+            ),
+        ]
+        if last_own_message:
+            prompt_parts.append(f"Последнее сообщение кандидата:\n{last_own_message}")
+        if last_employer_message:
+            prompt_parts.append(f"Последнее сообщение работодателя:\n{last_employer_message}")
+        prompt_parts.append("История переписки:")
+        prompt_parts.append("\n".join(message_history[-20:]))
+        prompt_parts.append(f"Инструкция: {self.message_prompt}")
+        return "\n\n".join(prompt_parts)
+
     def _reply_chats(
         self,
         user: datatypes.User,
@@ -277,6 +311,8 @@ class Operation(BaseOperation):
 
                     if page + 1 >= messages_res["pages"]:
                         break
+                    if page + 1 >= self.max_pages:
+                        break
                     page += 1
 
                 if not last_message:
@@ -286,9 +322,15 @@ class Operation(BaseOperation):
                     last_message["author"]["participant_type"] == "employer"
                 )
 
-                if is_employer_message or not negotiation.get(
-                    "viewed_by_opponent"
-                ):
+                if not is_employer_message:
+                    logger.debug(
+                        "Пропускаем чат %s: последнее сообщение не от работодателя",
+                        nid,
+                    )
+                    results["skipped"] += 1
+                    continue
+
+                if is_employer_message:
                     send_message = ""
                     if self.reply_message:
                         send_message = (
@@ -297,11 +339,10 @@ class Operation(BaseOperation):
                         logger.debug(f"Template message: {send_message}")
                     elif self.reply_ai:
                         try:
-                            ai_query = (
-                                f"Вакансия: {placeholders['vacancy_name']}\n"
-                                f"История переписки:\n"
-                                + "\n".join(message_history[-10:])
-                                + f"\n\nИнструкция: {self.message_prompt}"
+                            ai_query = self._build_ai_reply_query(
+                                vacancy_name=placeholders["vacancy_name"],
+                                resume_title=placeholders["resume_title"],
+                                message_history=message_history,
                             )
                             send_message = self.reply_ai.complete(
                                 ai_query

@@ -396,6 +396,7 @@ class Operation(
         self.ai_filter = args.ai_filter
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
+        self._vacancy_context_cache: dict[str, dict[str, Any]] = {}
 
         self._apply_vacancies()
 

@@ -50,6 +50,8 @@ COPY --from=builder /app/pyproject.toml /app/
 # Копируем конфиги и скрипты
 COPY admin /app/admin
 COPY config /app/config
+COPY prompts /app/prompts
+COPY scripts /app/scripts
 COPY crontab /app/crontab
 COPY container-entrypoint.sh /app/container-entrypoint.sh
 COPY startup.sh /app/startup.sh
@@ -63,6 +65,7 @@ RUN dos2unix /app/crontab && \
   dos2unix /app/container-entrypoint.sh && \
   chmod +x /app/startup.sh && \
   chmod +x /app/container-entrypoint.sh && \
+  chmod +x /app/scripts/*.sh && \
   chmod 0644 /app/crontab && \
   crontab -u docker /app/crontab && \
   chown -R docker:docker /app

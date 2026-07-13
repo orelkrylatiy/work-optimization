@@ -14,6 +14,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$PROJECT_ROOT/.env"
+    set +a
+fi
+
 # Конфигурация
 SEARCH_QUERY="${SEARCH_QUERY:-Frontend разработчик}"
 APPLY_LIMIT="${APPLY_LIMIT:-100}"
@@ -25,6 +35,7 @@ APPLY_ONLY=false
 REPLY_ONLY=false
 FULL=false
 DRY_RUN_FIRST=false
+DRY_RUN_ONLY=false
 
 # Парсинг аргументов
 while [[ $# -gt 0 ]]; do
@@ -43,7 +54,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --dry-run)
-            DRY_RUN_FIRST=true
+            DRY_RUN_ONLY=true
             shift
             ;;
         --search)
@@ -54,16 +65,21 @@ while [[ $# -gt 0 ]]; do
             APPLY_LIMIT="$2"
             shift 2
             ;;
+        --profile)
+            export HH_PROFILE_ID="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Использование: $0 [--apply-only] [--reply-only] [--full] [--dry-run]"
+            echo "Использование: $0 [--apply-only] [--reply-only] [--full] [--dry-run] [--profile ID]"
             echo ""
             echo "Опции:"
             echo "  --apply-only    Только отклики на вакансии"
             echo "  --reply-only    Только ответы работодателям"
             echo "  --full          Полный workflow с dry-run сначала"
-            echo "  --dry-run       Запустить dry-run перед live"
+            echo "  --dry-run       Только проверка без live-действий"
             echo "  --search        Поисковый запрос для откликов"
             echo "  --limit         Лимит вакансий"
+            echo "  --profile ID    Профиль аккаунта (по умолчанию: один основной аккаунт)"
             exit 0
             ;;
         *)
@@ -81,9 +97,6 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Функция для печати заголовка
 print_header() {
@@ -108,12 +121,22 @@ if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
     
     # Шаг 1: Подъём резюме
     print_step "Шаг 1/3 — Подъём резюме в топ"
-    hh-applicant-tool boost-resume
+    if [[ "$DRY_RUN_ONLY" == true ]]; then
+        echo -e "${YELLOW}🧪 Dry-run: подъём резюме пропущен${NC}"
+    else
+        HH_CMD=(hh-applicant-tool --no-auto-auth)
+        if [[ -n "${HH_PROFILE_ID:-}" ]]; then
+            HH_CMD+=(--profile-id "$HH_PROFILE_ID")
+        fi
+        "${HH_CMD[@]}" boost-resume
+    fi
     echo ""
     
     # Шаг 2: Отклики
     print_step "Шаг 2/3 — Отклики на вакансии"
-    if [[ "$DRY_RUN_FIRST" == true ]]; then
+    if [[ "$DRY_RUN_ONLY" == true ]]; then
+        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+    elif [[ "$DRY_RUN_FIRST" == true ]]; then
         echo -e "${YELLOW}🧪 Сначала dry-run...${NC}"
         "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
         echo ""
@@ -121,12 +144,18 @@ if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
         sleep 5
         echo ""
     fi
-    "$SCRIPT_DIR/apply.sh" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+    if [[ "$DRY_RUN_ONLY" == false ]]; then
+        "$SCRIPT_DIR/apply.sh" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+    fi
     echo ""
     
     # Шаг 3: Ответы
     print_step "Шаг 3/3 — Ответы работодателям"
-    "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    if [[ "$DRY_RUN_ONLY" == true ]]; then
+        "$SCRIPT_DIR/reply.sh" --dry-run --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    else
+        "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    fi
     echo ""
     
     print_header "✅ Ежедневный workflow завершён!"
@@ -140,7 +169,10 @@ fi
 if [[ "$APPLY_ONLY" == true ]]; then
     print_header "Отклики на вакансии"
     
-    if [[ "$DRY_RUN_FIRST" == true ]]; then
+    if [[ "$DRY_RUN_ONLY" == true ]]; then
+        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+        exit 0
+    elif [[ "$DRY_RUN_FIRST" == true ]]; then
         echo -e "${YELLOW}🧪 Сначала dry-run...${NC}"
         "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
         echo ""
@@ -160,6 +192,10 @@ fi
 if [[ "$REPLY_ONLY" == true ]]; then
     print_header "Ответы работодателям"
     
-    "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    if [[ "$DRY_RUN_ONLY" == true ]]; then
+        "$SCRIPT_DIR/reply.sh" --dry-run --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    else
+        "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+    fi
     exit 0
 fi

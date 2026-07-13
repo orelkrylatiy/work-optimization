@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..api.user_agent import generate_android_useragent
 from .attrdict import AttrDict
-from .config import Config, get_config_path
+from .config import Config, get_config_path, resolve_profile_config_dir
 from .date import (
     DATETIME_FORMAT,
     parse_api_datetime,
@@ -17,6 +17,7 @@ __all__ = [
     "AttrDict",
     "Config",
     "get_config_path",
+    "resolve_profile_config_dir",
     "DATETIME_FORMAT",
     "parse_api_datetime",
     "try_parse_datetime",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 from functools import cache
 from os import getenv
 from pathlib import Path
@@ -8,6 +9,9 @@ from threading import Lock
 from typing import Any
 
 from . import json
+
+
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @cache
@@ -19,6 +23,29 @@ def get_config_path() -> Path:
             return Path.home() / "Library" / "Application Support"
         case _:
             return Path(getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
+def resolve_profile_config_dir(
+    base_dir: str | Path,
+    profile_id: str | None = None,
+) -> Path:
+    """Resolve a profile directory consistently for CLI and cron workers."""
+    base_path = Path(base_dir)
+    normalized_profile = profile_id.strip() if profile_id else None
+
+    if normalized_profile and normalized_profile != ".":
+        if not PROFILE_NAME_RE.fullmatch(normalized_profile):
+            raise ValueError(
+                "Invalid profile name. Use letters, numbers, dot, dash or underscore."
+            )
+
+    if normalized_profile and normalized_profile != "default":
+        return (base_path / normalized_profile).resolve()
+    if (base_path / "config.json").exists():
+        return base_path.resolve()
+    if normalized_profile == "default":
+        return (base_path / "default").resolve()
+    return base_path.resolve()
 
 
 class Config(dict):

@@ -240,16 +240,7 @@ class HHApplicantTool(MegaTool):
                     "Invalid profile name. Use letters, numbers, dot, dash or underscore."
                 )
 
-        if profile_id and profile_id != "default":
-            return (base_dir / profile_id).resolve()
-
-        if (base_dir / "config.json").exists():
-            return base_dir.resolve()
-
-        if profile_id == "default":
-            return (base_dir / "default").resolve()
-
-        return base_dir.resolve()
+        return utils.resolve_profile_config_dir(base_dir, profile_id)
 
     @cached_property
     def config(self) -> utils.Config:

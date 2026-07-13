@@ -93,6 +93,41 @@ def test_apply_vacancies_run_assigns_selected_args(monkeypatch) -> None:
     assert operation.cover_letter_ai is tool.get_cover_letter_ai.return_value
 
 
+def test_apply_vacancies_run_fails_when_ai_letters_fail(monkeypatch) -> None:
+    operation = ApplyOperation()
+    tool = Mock()
+    tool.get_cover_letter_ai.return_value = Mock()
+
+    def record_ai_failure():
+        operation.ai_error_count = 1
+
+    monkeypatch.setattr(operation, "_apply_vacancies", record_ai_failure)
+    args = make_apply_args(use_ai=True)
+
+    assert operation.run(tool, args) == 1
+
+
+def test_apply_dry_run_does_not_blacklist_or_persist_excluded_vacancy() -> None:
+    operation = ApplyOperation()
+    operation.dry_run = True
+    operation.tool = Mock()
+    operation._args = SimpleNamespace(skip_tests=False)
+    operation._is_excluded = Mock(return_value=True)
+    operation._save_skipped_vacancy = Mock()
+    vacancy = {
+        "id": "vacancy-1",
+        "alternate_url": "https://example.test/vacancy-1",
+        "relations": [],
+        "archived": False,
+        "has_test": False,
+        "response_url": None,
+    }
+
+    assert operation._should_skip_vacancy_basic(vacancy, "resume-1") is True
+    operation.tool.api_client.put.assert_not_called()
+    operation._save_skipped_vacancy.assert_not_called()
+
+
 def test_reply_employers_prefers_explicit_resume_id() -> None:
     operation = ReplyOperation()
     tool = Mock()

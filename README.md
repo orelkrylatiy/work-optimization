@@ -15,13 +15,22 @@ hh-applicant-tool list-resumes
 # Поднять резюме
 hh-applicant-tool boost-resume
 
-# Отклики (dry-run → live)
-hh-applicant-tool apply-vacancies --search "Frontend разработчик" --letter-file ./letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests --dry-run
-hh-applicant-tool apply-vacancies --search "Frontend разработчик" --letter-file ./letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests
+# Отклики с AI-письмами (dry-run → live)
+./scripts/apply.sh --dry-run
+./scripts/apply.sh
 
-# Ответы работодателям
-hh-applicant-tool reply-employers -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" --period 2
+# Ответы работодателям (итеративно, AI, с учётом кто первый написал)
+./scripts/reply.sh --dry-run
+./scripts/reply.sh
 ```
+
+**3. Локальные переменные для персонализации:**
+```bash
+HH_NAME=Максим
+HH_TELEGRAM=@maxxwway
+```
+
+`apply.sh`, `reply.sh` и `daily.sh` автоматически подхватывают их из `.env` в корне.
 
 **📚 Полная документация:** [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
 
@@ -80,6 +89,27 @@ docker compose logs -f
 
 В Docker-сценарии по умолчанию это `config/` проекта, смонтированная в `/app/config`.
 
+## Multi-Profile Run
+
+Создай `.profiles` в корне проекта:
+
+```text
+default
+account2
+```
+
+Запуск:
+
+```bash
+./scripts/all-profiles.sh reply
+./scripts/all-profiles.sh apply
+./scripts/all-profiles.sh daily
+./scripts/all-profiles.sh reply --dry-run
+```
+
+Без `.profiles` используется один основной профиль `default`. Логи пишутся в
+`/tmp/hh-profiles/<profile>-<command>.log`.
+
 ## Авторизация
 
 ```bash
@@ -103,10 +133,13 @@ hh-applicant-tool whoami
 Пример safe dry-run:
 
 ```bash
+./scripts/apply.sh --dry-run
+# или напрямую:
 hh-applicant-tool apply-vacancies \
   --search "React frontend developer" \
+  --ai \
+  --system-prompt prompts/cover_letter_frontend.txt \
   --force-message \
-  --letter-file ./letter.txt \
   --skip-tests \
   --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан' \
   --dry-run
@@ -115,10 +148,13 @@ hh-applicant-tool apply-vacancies \
 Live запуск только после просмотра dry-run:
 
 ```bash
+./scripts/apply.sh
+# или напрямую:
 hh-applicant-tool apply-vacancies \
   --search "React frontend developer" \
+  --ai \
+  --system-prompt prompts/cover_letter_frontend.txt \
   --force-message \
-  --letter-file ./letter.txt \
   --skip-tests \
   --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан'
 ```

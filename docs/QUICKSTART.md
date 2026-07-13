@@ -20,13 +20,13 @@ hh-applicant-tool authorize
 
 ## 📊 Контекст
 
-**Пользователь:** Имя Фамилия  
+**Пользователь:** `${HH_NAME}`
 **Роль:** Frontend-разработчик (React/TypeScript/Redux)  
 **Опыт:** 5+ лет (прежние компании)  
 **Локация:** Москва, удалёнка OK  
 **Контакты:** 
-- Telegram: **@your_telegram** (основной)
-- Email: your-email@example.com
+- Telegram: **${HH_TELEGRAM}** (основной)
+- Email: укажи локально
 
 **Резюме:** https://hh.ru/resume/YOUR_RESUME_ID
 
@@ -49,21 +49,10 @@ hh-applicant-tool boost-resume
 
 ```bash
 # Dry-run сначала!
-hh-applicant-tool apply-vacancies \
-  --search "Frontend разработчик" \
-  --letter-file ./letter.txt \
-  --force-message \
-  --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" \
-  --skip-tests \
-  --dry-run
+./scripts/apply.sh --dry-run
 
 # Если всё ок — запуск
-hh-applicant-tool apply-vacancies \
-  --search "Frontend разработчик" \
-  --letter-file ./letter.txt \
-  --force-message \
-  --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" \
-  --skip-tests
+./scripts/apply.sh
 ```
 
 **Варианты поиска:**
@@ -75,9 +64,7 @@ hh-applicant-tool apply-vacancies \
 
 ```bash
 # Шаблонное сообщение (быстро)
-hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
-  --period 2
+./scripts/reply.sh --dry-run
 
 # Интерактивный режим (персонально)
 hh-applicant-tool reply-employers
@@ -98,7 +85,7 @@ hh-applicant-tool reply-employers
 
 ## ⚠️ Важно
 
-1. **Всегда упоминать Telegram @your_telegram** в ответах
+1. **Всегда упоминать Telegram `${HH_TELEGRAM}`** в ответах
 2. **Dry-run перед live** запуском откликов
 3. **Исключать:** junior, стажёры, bitrix, web3, crypto, blockchain
 4. **Лимит HH:** ~100-150 откликов в сутки

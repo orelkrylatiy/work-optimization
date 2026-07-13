@@ -3,14 +3,19 @@
 Итеративные ответы работодателям — 5-6 подходов по 50 чатов.
 Проверяет контекст: не отвечает, если уже есть ответ после последнего сообщения работодателя.
 """
+import os
 import subprocess
 import json
 import sys
 import time
 
-TELEGRAM = "@wavemax6"
-MAX_ITERATIONS = 6
-CHATS_PER_ITERATION = 50
+TELEGRAM = (
+    os.environ.get("HH_TELEGRAM")
+    or os.environ.get("TELEGRAM")
+    or "@maxxwway"
+).strip()
+MAX_ITERATIONS = int(os.environ.get("ITERATIONS") or os.environ.get("REPLY_ITERATIONS") or "6")
+CHATS_PER_ITERATION = int(os.environ.get("CHATS") or os.environ.get("REPLY_CHATS") or "50")
 
 def run_cmd(cmd):
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)

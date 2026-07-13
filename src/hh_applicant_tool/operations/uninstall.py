@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from ..main import BaseOperation
 
 if TYPE_CHECKING:
-    from ..main import HHApplicantTool
+    from ..main import BaseNamespace, HHApplicantTool
 
 
 logger = logging.getLogger(__package__)

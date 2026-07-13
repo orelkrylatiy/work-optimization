@@ -4,12 +4,12 @@ import argparse
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..api import datatypes
 from ..main import BaseNamespace, BaseOperation
-from ..utils.misc import load_prompt
 from ..storage.repositories.errors import RepositoryError
+from ..utils.misc import expand_env_placeholders, load_prompt
 from ._apply_vacancies_ai import ApplyVacanciesAIMixin
 from ._apply_vacancies_apply_flow import ApplyVacanciesApplyFlowMixin
 from ._apply_vacancies_helpers import ApplyVacanciesHelpersMixin
@@ -365,14 +365,16 @@ class Operation(
         self,
         tool: HHApplicantTool,
         args: Namespace,
-    ) -> None:
+    ) -> int | None:
         self.tool = tool
         self._args = args
         # Промпты можно задать как инлайн-строкой, так и путём к файлу (@file или путь)
         args.system_prompt = load_prompt(args.system_prompt)
         args.message_prompt = load_prompt(args.message_prompt)
         self.cover_letter = (
-            args.letter_file.read_text(encoding="utf-8", errors="ignore")
+            expand_env_placeholders(
+                args.letter_file.read_text(encoding="utf-8", errors="ignore")
+            )
             if args.letter_file
             else self.cover_letter
         )
@@ -397,8 +399,16 @@ class Operation(
         self.vacancy_filter_ai = None
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
         self._vacancy_context_cache: dict[str, dict[str, Any]] = {}
+        self.ai_error_count = 0
 
         self._apply_vacancies()
+        if self.ai_error_count:
+            logger.error(
+                "AI не сгенерировал письмо для %d вакансий; запуск помечен как неуспешный",
+                self.ai_error_count,
+            )
+            return 1
+        return None
 
     SEL_CAPTCHA_IMAGE = 'img[data-qa="account-captcha-picture"]'
     SEL_CAPTCHA_INPUT = 'input[data-qa="account-captcha-input"]'

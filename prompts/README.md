@@ -35,18 +35,17 @@ hh-applicant-tool reply-employers --use-ai --system-prompt "Отвечай ве�
 `--prompt` / `--message-prompt` задаёт промпт *генерации*, `--system-prompt` — *системный*.
 Оба понимают и путь к файлу, и строку.
 
-## Личные данные (контакты, ставка)
+## Личные данные (имя, Telegram)
 
-Коммитируемые промпты **не содержат** реальных контактов — там плейсхолдер
-`@your_telegram`. Свою версию держи локально и не коммить:
+Коммитируемые промпты используют `${HH_NAME}` и `${HH_TELEGRAM}`.
+Для скриптов проекта достаточно заполнить `.env` в корне:
 
 ```bash
-cp prompts/reply_employer.txt prompts/reply_employer.local.txt
-# впиши реальный telegram / диапазон ставки
-hh-applicant-tool reply-employers --use-ai --system-prompt prompts/reply_employer.local.txt
+HH_NAME=Максим
+HH_TELEGRAM=@maxxwway
 ```
 
-`prompts/*.local.txt` уже в `.gitignore`.
+Если запускаешь CLI напрямую, переменные тоже должны быть экспортированы в shell.
 
 ## Стратегия на день (для человека/cron)
 

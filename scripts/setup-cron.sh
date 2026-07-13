@@ -5,7 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
 # Цвета для вывода
 RED='\033[0;31m'
@@ -17,7 +18,7 @@ echo -e "${GREEN}=== Настройка cron для HH Applicant Tool ===${NC}"
 echo
 
 # Проверка пути к проекту
-PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"
+PROJECT_DIR="${PROJECT_DIR:-$PROJECT_ROOT}"
 echo "Директория проекта: $PROJECT_DIR"
 
 # Проверка пути к Python
@@ -38,16 +39,30 @@ RUN_TIME="${RUN_TIME:-09:00}"
 RUN_HOUR=$(echo "$RUN_TIME" | cut -d: -f1)
 RUN_MIN=$(echo "$RUN_TIME" | cut -d: -f2)
 
-echo -e "${YELLOW}Время запуска: $RUN_TIME (MSK)${NC}"
+if [[ ! "$RUN_HOUR" =~ ^([01]?[0-9]|2[0-3])$ || ! "$RUN_MIN" =~ ^[0-5]?[0-9]$ ]]; then
+    echo -e "${RED}Ошибка: RUN_TIME должен быть в формате HH:MM${NC}"
+    exit 1
+fi
+
+APPLY_TOTAL_MINUTES=$((10#$RUN_HOUR * 60 + 10#$RUN_MIN + 15))
+REPLY_TOTAL_MINUTES=$((10#$RUN_HOUR * 60 + 10#$RUN_MIN + 30))
+APPLY_HOUR=$((APPLY_TOTAL_MINUTES / 60 % 24))
+APPLY_MIN=$((APPLY_TOTAL_MINUTES % 60))
+REPLY_HOUR=$((REPLY_TOTAL_MINUTES / 60 % 24))
+REPLY_MIN=$((REPLY_TOTAL_MINUTES % 60))
+
+echo -e "${YELLOW}Время запуска: $RUN_TIME (локальное время сервера)${NC}"
 echo
 
 # Создание crontab
-CRON_JOB="$RUN_MIN $RUN_HOUR * * * cd $PROJECT_DIR && $HH_TOOL boost-resume >> $PROJECT_DIR/logs/boost.log 2>&1"
-CRON_JOB2="$((RUN_MIN + 15)) $RUN_HOUR * * * cd $PROJECT_DIR && $HH_TOOL apply-vacancies --search 'Frontend разработчик' --letter-file $PROJECT_DIR/letter.txt --force-message --excluded-filter 'junior|стажир|bitrix|web3|crypto|blockchain' --skip-tests --per-page 50 --total-pages 3 >> $PROJECT_DIR/logs/apply.log 2>&1"
+CRON_JOB="$RUN_MIN $RUN_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh boost >> $PROJECT_DIR/logs/boost.log 2>&1"
+CRON_JOB2="$APPLY_MIN $APPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh apply >> $PROJECT_DIR/logs/apply.log 2>&1"
+CRON_JOB3="$REPLY_MIN $REPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh reply >> $PROJECT_DIR/logs/reply.log 2>&1"
 
 echo -e "${YELLOW}Добавляем задачи в cron:${NC}"
 echo "1. Поднятие резюме: $CRON_JOB"
 echo "2. Отклики: $CRON_JOB2"
+echo "3. Ответы: $CRON_JOB3"
 echo
 
 # Подтверждение
@@ -62,7 +77,7 @@ fi
 mkdir -p "$PROJECT_DIR/logs"
 
 # Добавление в crontab
-(crontab -l 2>/dev/null | grep -v "hh-applicant-tool" || true; echo "$CRON_JOB"; echo "$CRON_JOB2") | crontab -
+(crontab -l 2>/dev/null | grep -v "$PROJECT_DIR" || true; echo "$CRON_JOB"; echo "$CRON_JOB2"; echo "$CRON_JOB3") | crontab -
 
 echo -e "${GREEN}✓ Cron настроен успешно!${NC}"
 echo

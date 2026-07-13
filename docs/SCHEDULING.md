@@ -39,7 +39,7 @@ make schedule-time TIME=10:30
 
 1. Создаёт 2 cron-задачи:
    - **09:00** — `boost-resume` (поднятие резюме)
-   - **09:15** — `apply-vacancies` (отклики, 50 вакансий)
+   - **09:15** — `scripts/apply.sh` (отклики, AI-письма)
 
 2. Логи сохраняются в `logs/boost.log` и `logs/apply.log`
 
@@ -68,7 +68,7 @@ crontab -e
 
 # Добавь строки (замени /path/to/project на свой):
 15 9 * * * cd /path/to/project && python3 -m hh_applicant_tool boost-resume >> /path/to/project/logs/boost.log 2>&1
-30 9 * * * cd /path/to/project && python3 -m hh_applicant_tool apply-vacancies --search "Frontend разработчик" --letter-file /path/to/project/letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests --per-page 50 --total-pages 3 >> /path/to/project/logs/apply.log 2>&1
+30 9 * * * cd /path/to/project && /bin/bash /path/to/project/scripts/apply.sh >> /path/to/project/logs/apply.log 2>&1
 ```
 
 ---

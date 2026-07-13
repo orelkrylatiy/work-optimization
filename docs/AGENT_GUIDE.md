@@ -37,35 +37,24 @@ hh-applicant-tool call-api "/negotiations?status=active&per_page=20" 2>/dev/null
 # 1. Поднять резюме в топ (1 раз в день)
 hh-applicant-tool boost-resume
 
-# 2. Отправить отклики (dry-run → live)
-hh-applicant-tool apply-vacancies \
-  --search "Frontend разработчик" \
-  --letter-file ./letter.txt \
-  --force-message \
-  --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" \
-  --skip-tests \
-  --dry-run  # Сначала проверка!
+# 2. Отклики с AI-письмами (dry-run → live)
+./scripts/apply.sh --dry-run   # проверить что будет отправлено
+./scripts/apply.sh              # live
 
-# 3. Если dry-run ок — запуск live
-hh-applicant-tool apply-vacancies \
-  --search "Frontend разработчик" \
-  --letter-file ./letter.txt \
-  --force-message \
-  --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" \
-  --skip-tests
+# 3. Ответить работодателям (итеративный AI, 6 проходов по 50 чатов)
+./scripts/reply.sh --dry-run   # проверить
+./scripts/reply.sh              # live
 
-# 4. Ответить работодателям (персонально!)
-hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
-  --period 2
+# Или всё сразу (резюме + отклики + ответы):
+./scripts/daily.sh
 ```
 
 ### 3. Контекст проекта
 
-**Пользователь:** Имя Фамилия, Frontend-разработчик (React/TypeScript/Redux)  
+**Пользователь:** `${HH_NAME}`, Frontend-разработчик (React/TypeScript/Redux)
 **Опыт:** 5+ лет (прежние компании)  
 **Локация:** Москва, готов к удалёнке  
-**Контакты:** Telegram @your_telegram, your-email@example.com
+**Контакты:** Telegram `${HH_TELEGRAM}`
 
 **Текущая стратегия:**
 - Откликов в день: 80-120
@@ -106,10 +95,15 @@ hh-applicant-tool reply-employers \
 ### Отклики на вакансии
 
 ```bash
-# Шаблон для ежедневных откликов
+# Рекомендуемый способ — через скрипт (AI письма)
+./scripts/apply.sh --dry-run   # сначала проверка
+./scripts/apply.sh              # live
+
+# Или напрямую с AI:
 hh-applicant-tool apply-vacancies \
   --search "<запрос>" \
-  --letter-file ./letter.txt \
+  --ai \
+  --system-prompt prompts/cover_letter_frontend.txt \
   --force-message \
   --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" \
   --skip-tests \
@@ -131,17 +125,15 @@ hh-applicant-tool apply-vacancies \
 ### Ответы работодателям
 
 ```bash
-# Шаблонное сообщение во все чаты
-hh-applicant-tool reply-employers \
-  -m "Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: @your_telegram" \
-  --period 2
-
-# Интерактивный режим (персонально)
-hh-applicant-tool reply-employers
-
-# Только приглашения
-hh-applicant-tool reply-employers --only-invitations
+# Рекомендуемый способ — итеративный AI-ответ (учитывает кто написал первым)
+./scripts/reply.sh --dry-run   # сначала проверка
+./scripts/reply.sh              # live (6 итераций × 50 чатов)
 ```
+
+Логика `reply.sh`: пробегает по активным чатам, проверяет кто написал последним.
+Если последнее сообщение от работодателя — генерирует персональный AI-ответ.
+Если последнее от нас — пропускает (не задваивает ответы).
+В промпт передаётся контекст: мы откликнулись сами или нас пригласили.
 
 ### API вызовы
 
@@ -276,8 +268,8 @@ hh-applicant-tool authorize
 
 ## 📞 Контакты пользователя
 
-- **Telegram:** @your_telegram
-- **Email:** your-email@example.com
+- **Telegram:** `${HH_TELEGRAM}`
+- **Email:** укажи локально при необходимости
 - **HH.ru:** https://hh.ru/resume/YOUR_RESUME_ID
 
 **Важно:** При ответах работодателям всегда упоминать Telegram для оперативной связи.

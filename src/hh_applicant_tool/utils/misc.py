@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from functools import partial
 from pathlib import Path
@@ -8,6 +9,10 @@ from pathlib import Path
 
 def calc_hash(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
+
+
+def expand_env_placeholders(value: str) -> str:
+    return os.path.expandvars(value)
 
 
 def load_prompt(value: str | None) -> str | None:
@@ -33,13 +38,17 @@ def load_prompt(value: str | None) -> str | None:
             raise FileNotFoundError(f"Prompt file not found: {file_path}")
         if not file_path.is_file():
             raise ValueError(f"Prompt path is not a file: {file_path}")
-        return file_path.read_text(encoding="utf-8").strip()
+        return expand_env_placeholders(
+            file_path.read_text(encoding="utf-8").strip()
+        )
     candidate = Path(value).expanduser()
     if candidate.is_file():
-        return candidate.read_text(encoding="utf-8").strip()
+        return expand_env_placeholders(
+            candidate.read_text(encoding="utf-8").strip()
+        )
     if candidate.exists():
         raise ValueError(f"Prompt path is not a file: {value}")
-    return value
+    return expand_env_placeholders(value)
 
 
 print_err = partial(print, file=sys.stderr, flush=True)

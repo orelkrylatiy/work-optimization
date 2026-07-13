@@ -22,7 +22,7 @@ class ChatOpenAI:
 
     Поддерживает:
     - rate limiting с настраиваемым лимитом запросов в минуту
-    - автоматический retry при ответе 429 с учётом заголовка Retry-After
+    - автоматический retry при rate limit, временных 5xx и сетевых сбоях
     - генерацию текста (complete) и распознавание капчи (solve_captcha)
     """
 
@@ -105,14 +105,27 @@ class ChatOpenAI:
             try:
                 response = self._request(payload)
             except requests.exceptions.RequestException as ex:
-                raise OpenAIError(f"Network error: {ex}") from ex
-
-            if response.status_code == 429:
                 if attempt >= self.max_retries:
-                    raise OpenAIError("OpenAI rate limit exceeded")
+                    raise OpenAIError(f"Network error: {ex}") from ex
+                delay = max(self._min_request_interval * (attempt + 1), 1.0)
+                logger.warning("AI network error, retry in %.2fs: %s", delay, ex)
+                time.sleep(delay)
+                continue
+
+            is_transient = response.status_code in {408, 409, 425, 429} or (
+                500 <= response.status_code < 600
+            )
+            if is_transient:
+                if attempt >= self.max_retries:
+                    try:
+                        response.raise_for_status()
+                    except requests.exceptions.RequestException as ex:
+                        raise OpenAIError(f"Network error: {ex}") from ex
                 delay = self._get_retry_delay(response, attempt)
                 logger.warning(
-                    "OpenAI returned 429 Too Many Requests, retry in %.2fs", delay
+                    "AI returned HTTP %d, retry in %.2fs",
+                    response.status_code,
+                    delay,
                 )
                 time.sleep(delay)
                 continue

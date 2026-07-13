@@ -85,12 +85,18 @@ class ApplyVacanciesApplyFlowMixin:
 
         if self._is_excluded(vacancy):
             logger.info("Вакансия попала под фильтр: %s", vacancy["alternate_url"])
-            self._save_skipped_vacancy(vacancy, "excluded_filter", resume_id)
-            self.api_client.put(f"/vacancies/blacklisted/{vacancy['id']}")
-            logger.info(
-                "Вакансия добавлена в черный список: %s",
-                vacancy["alternate_url"],
-            )
+            if not self.dry_run:
+                self._save_skipped_vacancy(vacancy, "excluded_filter", resume_id)
+                self.api_client.put(f"/vacancies/blacklisted/{vacancy['id']}")
+                logger.info(
+                    "Вакансия добавлена в черный список: %s",
+                    vacancy["alternate_url"],
+                )
+            else:
+                logger.debug(
+                    "dry-run: вакансия не добавлена в черный список: %s",
+                    vacancy["alternate_url"],
+                )
             return True
         return False
 
@@ -126,7 +132,8 @@ class ApplyVacanciesApplyFlowMixin:
             f"🧠 AI ({self.ai_filter}) посчитал неподходящей",
             vacancy["alternate_url"],
         )
-        self._save_skipped_vacancy(vacancy, "ai_rejected", resume_id)
+        if not self.dry_run:
+            self._save_skipped_vacancy(vacancy, "ai_rejected", resume_id)
         return True
 
     def _load_employer_contacts(
@@ -384,7 +391,10 @@ class ApplyVacanciesApplyFlowMixin:
                 logger.warning("Достигли лимита на отклики")
             except ApiError as ex:
                 logger.warning(ex)
-            except (BadResponse, AIError) as ex:
+            except AIError as ex:
+                self.ai_error_count += 1
+                logger.error(ex)
+            except BadResponse as ex:
                 logger.error(ex)
 
         logger.info(

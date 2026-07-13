@@ -3,30 +3,79 @@
 Итеративные AI-ответы работодателям — 5-6 подходов по 50 чатов.
 Каждый ответ генерируется через Ollama с учётом истории переписки.
 """
-import subprocess
 import json
+import os
+import re
+import subprocess
 import sys
 import time
-import requests
 from pathlib import Path
 
-TELEGRAM = "@wavemax6"
-MAX_ITERATIONS = 6  # Полных итераций
-CHATS_PER_ITERATION = 50  # Чатов за итерацию
-OLLAMA_URL = "http://localhost:11434/v1/chat/completions"
-OLLAMA_MODEL = "qwen2.5:14b"  # Лучшее качество русского языка
-DRY_RUN = "--dry-run" in sys.argv
-PAUSE_BETWEEN_REQUESTS = 2.0  # Секунды между отправками (rate limiting)
-PAUSE_BETWEEN_ITERATIONS = 120  # Секунды между итерациями (2 минуты)
-MAX_RETRIES = 3  # Максимум попыток отправки в одном чате
+import requests
 
-SYSTEM_PROMPT = """Ты — Максим Агофонов, Frontend-разработчик (React/TypeScript/Redux, 5+ лет).
+from hh_applicant_tool.constants import CONFIG_DIR
+from hh_applicant_tool.utils.config import resolve_profile_config_dir
+
+NAME = (os.environ.get("HH_NAME") or "Максим").strip()
+TELEGRAM = (
+    os.environ.get("HH_TELEGRAM")
+    or os.environ.get("TELEGRAM")
+    or "@maxxwway"
+).strip()
+MAX_ITERATIONS = int(os.environ.get("ITERATIONS") or os.environ.get("REPLY_ITERATIONS") or "6")
+CHATS_PER_ITERATION = int(os.environ.get("CHATS") or os.environ.get("REPLY_CHATS") or "50")
+DRY_RUN = "--dry-run" in sys.argv
+PAUSE_BETWEEN_REQUESTS = 2.0
+PAUSE_BETWEEN_ITERATIONS = 120
+MAX_RETRIES = 3
+
+# Мультиаккаунт: профиль из env или --profile аргумента
+PROFILE_ID = os.environ.get('HH_PROFILE_ID', '')
+for _i, _arg in enumerate(sys.argv[1:]):
+    if _arg == '--profile' and _i + 2 < len(sys.argv):
+        PROFILE_ID = sys.argv[_i + 2]
+        break
+
+
+def _hh_cmd(*args):
+    """Собирает команду hh-applicant-tool с профилем если задан."""
+    cmd = ['hh-applicant-tool', '--no-auto-auth']
+    if PROFILE_ID:
+        cmd += ['--profile-id', PROFILE_ID]
+    cmd += list(args)
+    return cmd
+
+
+def _get_config_path() -> Path:
+    """Возвращает тот же config.json, который выбрал основной CLI."""
+    base_dir = Path(os.environ.get("CONFIG_DIR", str(CONFIG_DIR)))
+    return resolve_profile_config_dir(base_dir, PROFILE_ID) / "config.json"
+
+
+def _load_ai_config():
+    """Читает AI-конфиг выбранного профиля."""
+    try:
+        cfg_path = _get_config_path()
+        with cfg_path.open(encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get('openai_reply') or cfg.get('openai_cover_letter') or {}
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        print(f"❌ Не удалось загрузить AI-конфиг выбранного профиля: {exc}")
+        return {}
+
+
+_ai_cfg = _load_ai_config()
+AI_URL = _ai_cfg.get('base_url', 'http://localhost:11434/v1/chat/completions')
+AI_MODEL = _ai_cfg.get('model', 'qwen2.5:14b')
+AI_API_KEY = _ai_cfg.get('api_key', 'ollama')
+
+DEFAULT_SYSTEM_PROMPT = f"""Ты — {NAME}, Frontend-разработчик (React/TypeScript/Redux, 5+ лет).
 Отвечаешь работодателям в чате HH.ru.
 
 ПРАВИЛА:
 1. Пиши ТОЛЬКО на русском языке, без английских вставок
 2. 2-4 предложения, кратко и по делу
-3. Всегда упоминай Telegram: @wavemax6 для связи
+3. Всегда упоминай Telegram: {TELEGRAM} для связи
 4. Анализируй историю переписки ПЕРЕД ответом:
    - Если работодатель задал вопрос → ответь на КОНКРЕТНЫЙ вопрос
    - Если первое сообщение после отклика → поблагодари + предложи созвон
@@ -34,28 +83,92 @@ SYSTEM_PROMPT = """Ты — Максим Агофонов, Frontend-разраб
    - Если отказ → вежливо поблагодари
 5. НЕ пиши шаблонные фразы вроде "Успехов в поисках" без контекста
 6. Обращайся к работодателю на "Вы"
+7. Не используй placeholder'ы или заготовки вроде [ваш город], {{название компании}}, <имя>
+8. Если точных данных нет, ответь нейтрально и без выдумок
 """
 
 
-def run_cmd(cmd):
-    """Выполняет CLI-команду и возвращает JSON-результат."""
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+def _load_system_prompt() -> str:
+    prompt_path = os.environ.get("REPLY_SYSTEM_PROMPT_FILE")
+    if not prompt_path:
+        return DEFAULT_SYSTEM_PROMPT
     try:
-        return json.loads(result.stdout) if result.stdout else None
-    except json.JSONDecodeError:
+        prompt_text = Path(prompt_path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        print(f"   ⚠️  Не удалось прочитать системный промпт: {exc}")
+        return DEFAULT_SYSTEM_PROMPT
+    return prompt_text or DEFAULT_SYSTEM_PROMPT
+
+
+SYSTEM_PROMPT = _load_system_prompt()
+
+
+PLACEHOLDER_PATTERNS = (
+    re.compile(r"\[[^\[\]\n]{1,80}\]"),
+    re.compile(r"\{[^{}\n]{1,80}\}"),
+    re.compile(r"<[^<>\n]{1,80}>"),
+)
+PLACEHOLDER_PHRASES = (
+    "ваш город",
+    "вашем городе",
+    "ваша компания",
+    "название компании",
+    "имя рекрутера",
+    "ваше имя",
+)
+
+
+def has_unresolved_placeholders(text: str) -> bool:
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return False
+    lowered = normalized.lower()
+    if any(phrase in lowered for phrase in PLACEHOLDER_PHRASES):
+        return True
+    return any(pattern.search(normalized) for pattern in PLACEHOLDER_PATTERNS)
+
+
+def build_safe_reply(initiated_by_us: bool) -> str:
+    if initiated_by_us:
+        return (
+            f"Здравствуйте! Спасибо за сообщение. Готов обсудить детали вакансии "
+            f"и ответить на вопросы. Telegram: {TELEGRAM}"
+        )
+    return (
+        f"Здравствуйте! Спасибо за приглашение. Готов обсудить детали вакансии "
+        f"и ответить на вопросы. Telegram: {TELEGRAM}"
+    )
+
+
+def run_hh(*args):
+    """Выполняет hh-applicant-tool команду и возвращает JSON-результат."""
+    result = subprocess.run(_hh_cmd(*args), capture_output=True, text=True)
+    if result.returncode != 0:
+        err = result.stderr.strip() or result.stdout.strip() or "Unknown HH CLI error"
+        raise RuntimeError(err)
+    if not result.stdout:
         return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid HH JSON output: {result.stdout[:200]}") from exc
 
 
 def get_negotiations(page=0, per_page=CHATS_PER_ITERATION):
     """Получает список активных переговоров."""
-    data = run_cmd(f'hh-applicant-tool call-api "/negotiations?status=active&per_page={per_page}&page={page}" 2>/dev/null')
+    data = run_hh('call-api', f'/negotiations?status=active&per_page={per_page}&page={page}')
     return data.get('items', []) if data else []
 
 
 def get_messages(neg_id):
     """Получает историю сообщений чата."""
-    data = run_cmd(f'hh-applicant-tool call-api "/negotiations/{neg_id}/messages?per_page=20" 2>/dev/null')
+    data = run_hh('call-api', f'/negotiations/{neg_id}/messages?per_page=20')
     return data.get('items', []) if data else []
+
+
+def message_participant_type(message):
+    """Возвращает автора сообщения согласно схеме HH API."""
+    return (message.get("author") or {}).get("participant_type", "")
 
 
 def get_vacancy_details_fast(neg):
@@ -69,39 +182,50 @@ def get_vacancy_details_fast(neg):
 
 def should_reply(messages):
     """
-    Проверяет, нужно ли отвечать:
-    - Если последнее сообщение от работодателя — нужно отвечать
-    - Если последнее от меня — уже ответил, пропускаем
+    Проверяет, нужно ли отвечать и строит контекст для AI.
+    - Последнее от работодателя → нужно отвечать
+    - Последнее от нас (applicant) → уже ответили, пропускаем
+    Возвращает (needs_reply, context_lines, initiated_by_us)
     """
     if not messages:
-        return False, None
+        return False, None, None
 
-    # Сортируем по времени (новые сверху)
-    sorted_msgs = sorted(messages, key=lambda m: m.get('created_at', ''), reverse=True)
-    last_msg = sorted_msgs[0]
-    last_author = last_msg.get('participant_type', '')
+    # Сортируем по времени: старые → новые
+    sorted_msgs = sorted(messages, key=lambda m: m.get('created_at', ''))
+    last_msg = sorted_msgs[-1]
+    last_author = message_participant_type(last_msg)
 
-    # Если последнее сообщение от меня — уже ответил
-    if last_author == 'applicant':
-        return False, None
+    # Отвечаем только когда схема явно подтверждает сообщение работодателя.
+    # Неизвестный автор безопаснее пропустить, чем отправить дубликат.
+    if last_author != 'employer':
+        return False, None, None
 
-    # Последнее от работодателя — нужно отвечать
-    # Берём контекст: последние 5-10 сообщений
+    # Кто инициировал переписку
+    first_author = message_participant_type(sorted_msgs[0])
+    initiated_by_us = first_author == 'applicant'
+
+    # Контекст: последние 10 сообщений в хронологическом порядке
     context = []
-    for m in sorted_msgs[:10]:
-        author = "Я" if m.get('participant_type') == 'applicant' else "Работодатель"
-        text = m.get('text', '')
+    for m in sorted_msgs[-10:]:
+        participant_type = message_participant_type(m)
+        author = "Я" if participant_type == 'applicant' else "Работодатель"
+        text = (m.get('text') or '').strip()
         context.append(f"{author}: {text}")
 
-    return True, context
+    return True, context, initiated_by_us
 
 
-def generate_reply_ai(context, vacancy_name, employer_name):
-    """
-    Генерирует персонализированный ответ через Ollama AI.
-    """
+def generate_reply_ai(context, vacancy_name, employer_name, initiated_by_us=True):
+    """Генерирует персонализированный ответ через AI (OpenAI / Ollama из конфига профиля)."""
+    situation = (
+        "Я сам откликнулся на вакансию (написал первым)."
+        if initiated_by_us else
+        "Работодатель написал первым — пригласил меня."
+    )
+
     prompt = f"""Вакансия: {vacancy_name}
 Компания: {employer_name}
+Ситуация: {situation}
 
 ИСТОРИЯ ПЕРЕПИСКИ:
 {chr(10).join(context)}
@@ -109,118 +233,60 @@ def generate_reply_ai(context, vacancy_name, employer_name):
 Напиши короткий персонализированный ответ работодателю на русском языке."""
 
     try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.3
-        }, timeout=30)
-
+        response = requests.post(
+            AI_URL,
+            headers={'Authorization': f'Bearer {AI_API_KEY}'},
+            json={
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.3,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
         result = response.json()
         reply = result['choices'][0]['message']['content'].strip()
 
-        # Гарантируем наличие Telegram
+        if not reply:
+            raise ValueError("AI вернул пустой ответ")
+
+        if has_unresolved_placeholders(reply):
+            print("   ⚠️  AI вернул placeholder'ы; ответ не будет отправлен")
+            return None
+
         if TELEGRAM not in reply:
             reply += f"\n\nTelegram: {TELEGRAM}"
 
         return reply
 
     except Exception as e:
-        print(f"   ⚠️  Ошибка AI: {e}")
-        # Fallback на шаблон
-        return f"Здравствуйте! Благодарю за интерес. Готов обсудить детали. Telegram: {TELEGRAM}"
+        print(f"   ⚠️  Ошибка AI; ответ не будет отправлен: {e}")
+        return None
 
 
-def send_reply(neg_id, message, tool_instance=None):
-    """
-    Отправляет сообщение используя cookie-сессию hh-applicant-tool.
-    """
+def send_reply(neg_id, message):
+    """Отправляет сообщение через hh-applicant-tool call-api."""
     if DRY_RUN:
-        print(f"   🧪 DRY-RUN: не отправлено")
+        print("   🧪 DRY-RUN: не отправлено")
         return True, None
-    
-    import subprocess
-    import base64
-    
-    # Кодируем сообщение в base64 чтобы избежать проблем с экранированием
-    message_b64 = base64.b64encode(message.encode('utf-8')).decode('ascii')
-    
+
+    if has_unresolved_placeholders(message):
+        return False, "Обнаружены неразрешённые placeholder'ы в сообщении"
+
     try:
-        # Используем Python-скрипт который импортирует hh-applicant-tool напрямую
-        send_script = f'''import sys
-import base64
-sys.path.insert(0, '/Users/m.s.agafonov/Desktop/work-optimization/src')
-from hh_applicant_tool.main import HHApplicantTool
-import logging
-
-logging.getLogger('urllib3').setLevel(logging.ERROR)
-
-tool = HHApplicantTool()
-try:
-    tool.run(['whoami'])
-
-    # Проверяем состояние переговоров
-    neg_info = tool.api_client.get('/negotiations/{neg_id}')
-    if not neg_info:
-        print("NOT_FOUND")
-        sys.exit(2)
-
-    state = neg_info.get('state', {{}}).get('name', '')
-    if state == 'discard':
-        print("DISCARDED")
-        sys.exit(3)
-
-    # Декодируем сообщение
-    message_text = base64.b64decode('{message_b64}').decode('utf-8')
-    if not message_text.strip():
-        print("EMPTY")
-        sys.exit(4)
-
-    # Отправляем
-    result = tool.api_client.post('/negotiations/{neg_id}/messages', message=message_text)
-    if result:
-        print("SUCCESS")
-        sys.exit(0)
-    else:
-        print("FAILED")
-        sys.exit(1)
-
-except Exception as e:
-    print("ERROR: " + type(e).__name__ + ": " + str(e))
-    sys.exit(1)
-'''
-        
-        result = subprocess.run(
-            ['python3', '-c', send_script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd='/Users/m.s.agafonov/Desktop/work-optimization'
+        run_hh(
+            "call-api",
+            f"/negotiations/{neg_id}/messages",
+            "--method",
+            "POST",
+            f"message={message}",
         )
-        
-        output = result.stdout.strip()
-        
-        if result.returncode == 0 or 'SUCCESS' in output:
-            return True, None
-        
-        # Маппинг ошибок
-        error_map = {
-            'NOT_FOUND': 'Чат не найден',
-            'DISCARDED': 'Отказ/закрыто',
-            'EMPTY': 'Пустое сообщение',
-            'FAILED': 'API вернул ошибку',
-            'PERMISSION_DENIED': 'Нет прав',
-        }
-        
-        error_msg = error_map.get(output, output or result.stderr.strip()[:100] or 'Неизвестная ошибка')
-        return False, error_msg
-        
-    except subprocess.TimeoutExpired:
-        return False, 'Таймаут (30 сек)'
+        return True, None
     except Exception as e:
-        return False, f'Ошибка: {type(e).__name__}: {e}'
+        return False, f'{type(e).__name__}: {e}'
 
 
 def process_iteration(iteration_num):
@@ -249,9 +315,11 @@ def process_iteration(iteration_num):
         if not neg_id:
             continue
 
-        # Проверяем статус переговоров (фильтруем закрытые)
-        state = neg.get('state', {}).get('name', '')
-        if state == 'discard':
+        # Проверяем статус переговоров (фильтруем отказы)
+        state_obj = neg.get('state', {})
+        state_id = state_obj.get('id', '')
+        state_name = state_obj.get('name', '')
+        if state_id == 'discard' or state_name in ('Отказ', 'discard'):
             stats['skipped_discarded'] += 1
             continue
 
@@ -261,19 +329,29 @@ def process_iteration(iteration_num):
         employer_name = vacancy_info['employer'][:50]
 
         messages = get_messages(neg_id)
-        needs_reply, context = should_reply(messages)
+        needs_reply, context, initiated_by_us = should_reply(messages)
 
         if not needs_reply:
             stats['skipped_no_reply'] += 1
             continue
 
         # Генерируем персонализированный AI-ответ
+        initiator = "мы откликнулись" if initiated_by_us else "нас пригласили"
         print(f"\n✍️  Чат #{i}/{len(negotiations)} — {vacancy_name}")
         print(f"   Компания: {employer_name}")
-        print(f"   Статус: {state or 'active'}")
+        print(f"   Статус: {state_name or state_id or 'active'} | Инициатор: {initiator}")
         print(f"   Сообщений в истории: {len(messages)}")
 
-        reply = generate_reply_ai(context or [], vacancy_name, employer_name)
+        reply = generate_reply_ai(context or [], vacancy_name, employer_name, initiated_by_us)
+
+        if not reply:
+            stats['skipped_error'] += 1
+            stats['errors'].append({
+                'negotiation_id': neg_id,
+                'vacancy': vacancy_name,
+                'error': 'AI did not produce a safe contextual reply',
+            })
+            continue
 
         print(f"   Ответ: {reply[:100]}...")
 
@@ -286,10 +364,9 @@ def process_iteration(iteration_num):
                 stats['replied'] += 1
                 print(f"   ✅ Отправлено (попытка {attempt + 1}/{MAX_RETRIES})")
                 break
-            else:
-                print(f"   ⚠️  Попытка {attempt + 1}/{MAX_RETRIES}: {error_msg}")
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(1)  # Пауза перед повтором
+            print(f"   ⚠️  Попытка {attempt + 1}/{MAX_RETRIES}: {error_msg}")
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(1)  # Пауза перед повтором
 
         if not success:
             stats['skipped_error'] += 1
@@ -313,16 +390,17 @@ def process_iteration(iteration_num):
     return stats['replied'], stats['skipped_no_reply'] + stats['skipped_discarded'] + stats['skipped_error'], stats
 
 
-def main():
-    print("🚀 Запуск итеративных AI-ответов работодателям")
+def main() -> int:
+    profile_label = f" [{PROFILE_ID}]" if PROFILE_ID else ""
+    print(f"🚀 Запуск итеративных AI-ответов работодателям{profile_label}")
     print(f"   Telegram для связи: {TELEGRAM}")
     print(f"   Максимум итераций: {MAX_ITERATIONS}")
     print(f"   Чатов за итерацию: {CHATS_PER_ITERATION}")
-    print(f"   Модель AI: {OLLAMA_MODEL} (Ollama)")
-    print(f"   Пауза между запросами: {PAUSE_BETWEEN_REQUESTS} сек (rate limiting)")
+    print(f"   Модель AI: {AI_MODEL} ({AI_URL})")
+    print(f"   Пауза между запросами: {PAUSE_BETWEEN_REQUESTS} сек")
     print(f"   Пауза между итерациями: {PAUSE_BETWEEN_ITERATIONS} сек")
     if DRY_RUN:
-        print(f"   🧪 РЕЖИМ: DRY-RUN (без отправки)")
+        print("   🧪 РЕЖИМ: DRY-RUN (без отправки)")
     print()
 
     total_replied = 0
@@ -330,26 +408,34 @@ def main():
     all_errors = []
     iterations_completed = 0
 
-    for iteration in range(1, MAX_ITERATIONS + 1):
-        iterations_completed = iteration
-        replied, skipped, stats = process_iteration(iteration)
-        total_replied += replied
-        total_skipped += skipped
-        if stats and stats.get('errors'):
-            all_errors.extend(stats['errors'])
+    try:
+        for iteration in range(1, MAX_ITERATIONS + 1):
+            iterations_completed = iteration
+            replied, skipped, stats = process_iteration(iteration)
+            total_replied += replied
+            total_skipped += skipped
+            if stats and stats.get('errors'):
+                all_errors.extend(stats['errors'])
 
-        # Если все чаты обработаны — выходим раньше
-        if replied == 0 and iteration > 1:
-            print("\n✅ Все чаты обработаны — новых ответов не требуется")
-            break
+            # Если все чаты обработаны — выходим раньше
+            if DRY_RUN:
+                print("\n✅ Dry-run завершён после одной итерации")
+                break
 
-        if iteration < MAX_ITERATIONS:
-            print(f"\n⏳ Пауза {PAUSE_BETWEEN_ITERATIONS} сек перед следующей итерацией...")
-            time.sleep(PAUSE_BETWEEN_ITERATIONS)
+            if replied == 0:
+                print("\n✅ Все чаты обработаны — новых ответов не требуется")
+                break
+
+            if iteration < MAX_ITERATIONS:
+                print(f"\n⏳ Пауза {PAUSE_BETWEEN_ITERATIONS} сек перед следующей итерацией...")
+                time.sleep(PAUSE_BETWEEN_ITERATIONS)
+    except RuntimeError as exc:
+        print(f"\n❌ Ошибка HH API: {exc}")
+        return 1
 
     # Финальная статистика
     print(f"\n{'='*60}")
-    print(f"✅ ЗАВЕРШЕНО")
+    print("✅ ЗАВЕРШЕНО")
     print(f"   Всего ответов отправлено: {total_replied}")
     print(f"   Всего чатов пропущено: {total_skipped}")
     print(f"   Итераций выполнено: {iterations_completed}")
@@ -368,7 +454,8 @@ def main():
             print(f"   - {err_type}: {len(errors)} чатов")
     
     print(f"{'='*60}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

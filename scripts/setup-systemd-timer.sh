@@ -93,7 +93,7 @@ After=network.target hh-boost.service
 [Service]
 Type=oneshot
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$HH_TOOL apply-vacancies --search "Frontend разработчик" --letter-file $PROJECT_DIR/letter.txt --force-message --excluded-filter "junior|стажир|bitrix|web3|crypto|blockchain" --skip-tests --per-page 50 --total-pages 3
+ExecStart=/bin/bash $PROJECT_DIR/scripts/apply.sh
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 StandardOutput=append:$PROJECT_DIR/logs/apply.log
 StandardError=append:$PROJECT_DIR/logs/apply.log

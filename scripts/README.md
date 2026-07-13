@@ -8,6 +8,7 @@
 | `apply.sh` | Отклики на вакансии | `./scripts/apply.sh` |
 | `reply.sh` | Ответы работодателям (AI) | `./scripts/reply.sh` |
 | `daily.sh` | Полный ежедневный workflow | `./scripts/daily.sh` |
+| `all-profiles.sh` | Параллельный запуск по всем профилям | `./scripts/all-profiles.sh daily` |
 
 ---
 
@@ -41,9 +42,24 @@
 # Всё сразу: резюме + отклики + ответы
 ./scripts/daily.sh
 
-# С dry-run сначала
+# Только безопасная проверка, без последующего live
 ./scripts/daily.sh --dry-run
 ```
+
+### 5. Несколько профилей сразу
+```bash
+# .profiles в корне проекта:
+# default
+# account2
+
+./scripts/all-profiles.sh reply
+./scripts/all-profiles.sh apply
+./scripts/all-profiles.sh daily
+./scripts/all-profiles.sh reply --dry-run
+```
+
+Без `.profiles` используется один основной профиль `default`. Логи пишутся в
+`/tmp/hh-profiles/<profile>-<command>.log`.
 
 ---
 
@@ -77,7 +93,7 @@
 - `--dry-run` — пробный запуск без отправки
 - `--search "QUERY"` — поисковый запрос (по умолчанию: "Frontend разработчик")
 - `--limit N` — лимит вакансий (по умолчанию: 100)
-- `--letter-file FILE` — файл с шаблоном письма
+- `--system-prompt FILE` — системный промпт для AI
 - `--excluded-filter` — фильтр исключений (regex)
 
 **Примеры:**
@@ -116,7 +132,7 @@ LIMIT=200 ./scripts/apply.sh
 - `--dry-run` — пробный запуск без отправки
 - `--iterations N` — максимум итераций (по умолчанию: 6)
 - `--chats N` — чатов за итерацию (по умолчанию: 50)
-- `--telegram @USER` — Telegram для связи (по умолчанию: @wavemax6)
+- `--telegram @USER` — Telegram для связи (по умолчанию: `HH_TELEGRAM` из `.env`)
 
 **Примеры:**
 ```bash
@@ -132,7 +148,7 @@ LIMIT=200 ./scripts/apply.sh
 
 **Что делает:**
 - 5-6 итераций по 50 чатов
-- Генерирует ответы через Ollama (qwen2.5:14b)
+- Генерирует ответы через AI-провайдер из `config.json`
 - Анализирует историю переписки
 - Rate limiting: 2 сек между запросами
 - Пауза 2 мин между итерациями
@@ -152,7 +168,7 @@ LIMIT=200 ./scripts/apply.sh
 - `--apply-only` — только отклики
 - `--reply-only` — только ответы
 - `--full` — полный workflow с dry-run сначала
-- `--dry-run` — запуск dry-run перед live
+- `--dry-run` — только dry-run, без live-действий
 - `--search` — поисковый запрос для откликов
 - `--limit` — лимит вакансий
 
@@ -185,6 +201,10 @@ LIMIT=200 ./scripts/apply.sh
 Можно настроить в `.env` или в shell profile:
 
 ```bash
+# Имя и контакт для промптов
+export HH_NAME="Максим"
+export HH_TELEGRAM="@maxxwway"
+
 # Поисковый запрос по умолчанию
 export SEARCH_QUERY="Frontend React TypeScript"
 
@@ -195,8 +215,8 @@ export APPLY_LIMIT=150
 export REPLY_ITERATIONS=6
 export REPLY_CHATS=50
 
-# Telegram для связи
-export TELEGRAM="@wavemax6"
+# Telegram для связи (override)
+export TELEGRAM="@maxxwway"
 ```
 
 ### Кастомизация фильтров
@@ -210,15 +230,6 @@ EXCLUDED_FILTER="junior|стажир|bitrix|web3|crypto|blockchain"
 
 ## 🔧 Troubleshooting
 
-### "Ollama не установлена"
-```bash
-# Установите Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Скачайте модель
-ollama pull qwen2.5:14b
-```
-
 ### "Требуется авторизация"
 ```bash
 hh-applicant-tool authorize
@@ -227,9 +238,9 @@ hh-applicant-tool authorize
 ### "Лимит откликов достигнут"
 HH.ru ограничивает ~100-150 откликов в сутки. Подождите до завтра.
 
-### "Модель не найдена"
+### "AI не генерирует текст"
 ```bash
-ollama pull qwen2.5:14b
+python3 ./scripts/check_ai.py
 ```
 
 ---

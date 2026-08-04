@@ -70,3 +70,27 @@ def test_unknown_author_is_not_treated_as_employer(reply_worker):
     messages = [{"text": "Системное сообщение", "created_at": "2026-01-01"}]
 
     assert reply_worker.should_reply(messages) == (False, None, None)
+
+
+def test_send_reply_passes_message_as_json_body(reply_worker, monkeypatch):
+    captured = {}
+
+    def fake_run_hh(*args):
+        captured["args"] = args
+        return {}
+
+    monkeypatch.setattr(reply_worker, "run_hh", fake_run_hh)
+    message_text = "Здравствуйте!\nГотов обсудить вакансию. Telegram: @maxxwway"
+
+    success, error = reply_worker.send_reply("12345", message_text)
+
+    assert success is True
+    assert error is None
+    assert captured["args"][:5] == (
+        "call-api",
+        "/negotiations/12345/messages",
+        "--method",
+        "POST",
+        "--data",
+    )
+    assert json.loads(captured["args"][5]) == {"message": message_text}

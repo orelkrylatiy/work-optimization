@@ -66,25 +66,31 @@ HH_TELEGRAM=@maxxwway
 # Python 3.11+
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e '.[playwright,pillow]'
-# Required to run the FastAPI admin panel and its TestClient tests.
-python -m pip install -r admin/requirements.txt
+pip install '.[playwright]'
+cp .env.example .env 2>/dev/null || touch .env
 ```
 
-Poetry users should install the same admin dependency set explicitly:
+Проверка установки:
 
 ```bash
-poetry install --with dev
-poetry run python -m pip install --no-cache-dir -r admin/requirements.txt
+hh-applicant-tool --help
+hh-applicant-tool whoami
+hh-applicant-tool list-resumes
 ```
 
-Run the regular offline test suite with `make dev && make test`. The configured
-AI-provider check is intentionally opt-in because it contacts local Ollama and
-the configured provider:
+Рабочие скрипты используют `.venv` в корне проекта и автоматически читают
+`.env`. Минимальная персонализация:
+
+```dotenv
+HH_NAME=Максим
+HH_TELEGRAM=@username
+```
+
+Также в `config/config.json` должен быть настроен AI-провайдер для
+сопроводительных писем и автоответов. Проверить конфигурацию можно так:
 
 ```bash
-RUN_AI_INTEGRATION=1 poetry run pytest tests/test_ai_letter_integration.py -m integration -v
+.venv/bin/python scripts/check_ai.py
 ```
 
 ### Через Docker
@@ -108,26 +114,215 @@ docker compose logs -f
 
 В Docker-сценарии по умолчанию это `config/` проекта, смонтированная в `/app/config`.
 
-## Multi-Profile Run
+## Несколько HH-аккаунтов
 
-Создай `.profiles` в корне проекта:
+Каждый аккаунт хранится в отдельном профиле внутри общей директории
+`config/`. Имя профиля передаётся глобальным флагом `--profile-id` или через
+`HH_PROFILE_ID`.
+
+Авторизация первого аккаунта:
+
+```bash
+.venv/bin/hh-applicant-tool --profile-id default authorize '+7XXXXXXXXXX'
+.venv/bin/hh-applicant-tool --profile-id default whoami
+```
+
+Добавление следующего аккаунта:
+
+```bash
+.venv/bin/hh-applicant-tool --profile-id account2 authorize '+7YYYYYYYYYY'
+.venv/bin/hh-applicant-tool --profile-id account2 whoami
+```
+
+После успешной авторизации создай `.profiles` в корне проекта — по одному
+профилю на строку:
 
 ```text
 default
 account2
+# комментарии и пустые строки разрешены
 ```
 
-Запуск:
+Проверка каждого аккаунта отдельно:
 
 ```bash
+.venv/bin/hh-applicant-tool --profile-id default list-resumes
+.venv/bin/hh-applicant-tool --profile-id account2 list-resumes
+./scripts/apply.sh --profile account2 --dry-run
+./scripts/reply.sh --profile account2 --dry-run
 ./scripts/all-profiles.sh reply
 ./scripts/all-profiles.sh apply
 ./scripts/all-profiles.sh daily
 ./scripts/all-profiles.sh apply --live
 ```
 
-Без `.profiles` используется один основной профиль `default`. Логи пишутся в
+Параллельный запуск по всем профилям из `.profiles`:
+
+```bash
+./scripts/all-profiles.sh boost
+./scripts/all-profiles.sh apply --dry-run
+./scripts/all-profiles.sh apply
+./scripts/all-profiles.sh reply --dry-run
+./scripts/all-profiles.sh reply
+./scripts/all-profiles.sh cleanup
+./scripts/all-profiles.sh daily --dry-run
+./scripts/all-profiles.sh daily
+```
+
+`all-profiles.sh` запускает аккаунты параллельно, но не запускает две операции
+одновременно для одного профиля. Для этого используются lock-директории в
+`/tmp/hh-profile-locks`. Без `.profiles` работает только профиль `default`.
+Логи отдельных запусков находятся в
 `/tmp/hh-profiles/<profile>-<command>.log`.
+
+Чтобы временно задать список без файла:
+
+```bash
+PROFILES="default account2" ./scripts/all-profiles.sh reply --dry-run
+```
+
+Не копируй токены и cookies между профилями: у каждого аккаунта должна быть
+своя авторизация и своё состояние.
+
+## Автоотклики
+
+Безопасная последовательность для одного профиля:
+
+```bash
+./scripts/apply.sh --profile default --dry-run
+./scripts/apply.sh --profile default
+```
+
+Для всех аккаунтов:
+
+```bash
+./scripts/all-profiles.sh apply --dry-run
+./scripts/all-profiles.sh apply
+```
+
+По умолчанию `apply.sh` проходит несколько frontend-запросов, использует
+AI-сопроводительное письмо, пропускает вакансии с тестовыми заданиями и
+исключает нежелательные направления регулярным выражением. Полезные параметры:
+
+```bash
+./scripts/apply.sh \
+  --profile default \
+  --search "React TypeScript developer" \
+  --limit 50 \
+  --dry-run
+```
+
+- `--search` заменяет набор стандартных запросов одним указанным запросом;
+- `--limit` задаёт размер обрабатываемой выдачи на запрос, а не гарантированное
+  число отправленных откликов;
+- `--excluded-filter` переопределяет regex исключений;
+- без `--dry-run` отклики отправляются реально.
+
+## Автоответы работодателям
+
+`reply.sh` обрабатывает входящие чаты итерациями, генерирует ответ через AI и
+учитывает историю переписки. Контактные данные подставляются в промпт из
+`HH_NAME` и `HH_TELEGRAM`.
+
+Сначала всегда запускай проверку без отправки:
+
+```bash
+./scripts/reply.sh --profile default --dry-run
+./scripts/reply.sh --profile default --iterations 3 --chats 20 --dry-run
+```
+
+Live-запуск:
+
+```bash
+./scripts/reply.sh --profile default
+./scripts/all-profiles.sh reply
+```
+
+Параметры:
+
+- `--iterations N` — максимум проходов по входящим чатам;
+- `--chats N` — максимум чатов за один проход;
+- `--telegram @username` — контакт для текущего запуска;
+- `--dry-run` — сформировать решения, но ничего не отправлять.
+
+Состояние обработанных диалогов хранится отдельно по профилям в
+`config/reply-state/<profile>.json`. Перед ответами `daily.sh` запускает
+`cleanup.sh`, который скрывает отказы из активных переговоров; он не добавляет
+работодателей в blacklist.
+
+## Полный ежедневный цикл
+
+```bash
+# Один аккаунт
+./scripts/daily.sh --profile default --dry-run
+./scripts/daily.sh --profile default
+
+# Все аккаунты
+./scripts/all-profiles.sh daily --dry-run
+./scripts/all-profiles.sh daily
+```
+
+Полный цикл выполняет четыре шага:
+
+1. поднимает резюме;
+2. отправляет отклики;
+3. убирает отказы из активных чатов;
+4. отвечает работодателям.
+
+Дополнительные режимы: `--apply-only`, `--reply-only`, `--full` (сначала
+dry-run откликов, затем live).
+
+## Автозапуск: PM2 и cron
+
+На сервере используется PM2 с расписанием из `ecosystem.config.cjs`. Все часы
+указаны в UTC, только по будням:
+
+| Задача | UTC | Команда |
+|---|---:|---|
+| Подъём резюме | 05:00 | `all-profiles.sh boost` |
+| Первая волна откликов | 05:15 | `all-profiles.sh apply` |
+| Проверка и ответы | каждый час 06:00–13:00 | `all-profiles.sh reply` |
+| Очистка отказов | 14:15 | `all-profiles.sh cleanup` |
+
+Установка или обновление расписания:
+
+```bash
+mkdir -p logs
+pm2 startOrReload ecosystem.config.cjs
+pm2 save
+pm2 list
+```
+
+PM2 показывает cron-задачи как `stopped` между запусками — это нормально:
+`autorestart` отключён, процесс стартует только по расписанию. Первый
+регистрационный запуск также безопасен: `scripts/pm2-job.sh` проверяет текущий
+UTC-слот и вне расписания ничего не отправляет.
+
+Полезная диагностика:
+
+```bash
+pm2 list
+pm2 describe hh-reply-hourly
+pm2 logs hh-apply --lines 100
+tail -n 100 logs/hh-reply-hourly.log
+tail -n 100 /tmp/hh-profiles/default-reply.log
+```
+
+Все cron-задачи используют общий `flock` в `config/pm2-hh.lock`: если
+предыдущая HH-операция ещё работает, новый слот пропускается, чтобы процессы
+не конфликтовали за одну сессию.
+
+Если PM2 не нужен, эквивалентный системный cron можно задать вручную:
+
+```cron
+0 5 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh boost
+15 5 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh apply
+0 6-13 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh reply
+15 14 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh cleanup
+```
+
+Не включай одновременно PM2 и системный cron с одинаковым расписанием — это
+создаст дублирующиеся попытки запуска.
 
 ## Авторизация
 

@@ -295,7 +295,8 @@ def send_reply(neg_id, message):
             f"/negotiations/{neg_id}/messages",
             "--method",
             "POST",
-            f"message={message}",
+            "--data",
+            json.dumps({"message": message}, ensure_ascii=False),
         )
         return True, None
     except Exception as e:
@@ -476,7 +477,14 @@ def main() -> int:
                 print("\n✅ Dry-run завершён после одной итерации")
                 break
 
-            if start + CHATS_PER_ITERATION < len(negotiations):
+            if replied == 0:
+                if stats and stats.get('errors'):
+                    print("\n⚠️  Ответы требовались, но не были отправлены из-за ошибок")
+                else:
+                    print("\n✅ Все чаты обработаны — новых ответов не требуется")
+                break
+
+            if iteration < MAX_ITERATIONS:
                 print(f"\n⏳ Пауза {PAUSE_BETWEEN_ITERATIONS} сек перед следующей итерацией...")
                 time.sleep(PAUSE_BETWEEN_ITERATIONS)
     except RuntimeError as exc:
@@ -505,7 +513,7 @@ def main() -> int:
             print(f"   - {err_type}: {len(errors)} чатов")
     
     print(f"{'='*60}")
-    return 0
+    return 1 if all_errors else 0
 
 
 if __name__ == "__main__":

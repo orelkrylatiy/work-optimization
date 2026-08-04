@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -14,6 +15,19 @@ from ..storage.repositories.errors import RepositoryError
 from ..utils.string import rand_text, unescape_string
 
 logger = logging.getLogger(__package__)
+
+
+@dataclass(frozen=True)
+class VacancyResponseResult:
+    """Outcome of one vacancy response attempt.
+
+    ``accepted`` is also true in dry-run mode: the response was not sent, but it
+    represents a response that would have been sent and therefore consumes the
+    same per-run quota as a live response.
+    """
+
+    should_continue: bool
+    accepted: bool
 
 
 class ApplyVacanciesApplyFlowMixin:
@@ -38,6 +52,13 @@ class ApplyVacanciesApplyFlowMixin:
             self.vacancy_filter_ai.rate_limit = self.args.ai_rate_limit
 
     def _save_vacancy_data(self, vacancy: dict[str, Any]) -> None:
+        if self.dry_run:
+            logger.debug(
+                "dry-run: vacancy data was not persisted: %s",
+                vacancy.get("alternate_url", vacancy.get("id")),
+            )
+            return
+
         storage = self.tool.storage
         try:
             storage.vacancies.save(vacancy)
@@ -150,12 +171,13 @@ class ApplyVacanciesApplyFlowMixin:
         employer_profile: datatypes.Employer = self.api_client.get(
             f"/employers/{employer_id}"
         )
-        try:
-            self.tool.storage.employers.save(employer_profile)
-        except RepositoryError as ex:
-            logger.exception(ex)
+        if not self.dry_run:
+            try:
+                self.tool.storage.employers.save(employer_profile)
+            except RepositoryError as ex:
+                logger.exception(ex)
 
-        if self.args.send_email and (
+        if not self.dry_run and self.args.send_email and (
             site_url := (employer_profile.get("site_url") or "").strip()
         ):
             site_url = site_url if "://" in site_url else "https://" + site_url
@@ -215,76 +237,99 @@ class ApplyVacanciesApplyFlowMixin:
         vacancy: dict[str, Any],
         resume_id: str,
         letter: str,
-    ) -> bool:
+    ) -> VacancyResponseResult:
         logger.debug("Пробуем откликнуться на вакансию: %s", vacancy["alternate_url"])
 
         if vacancy.get("has_test"):
             logger.debug("Решаем тест: %s", vacancy["alternate_url"])
+            if self.dry_run:
+                logger.info(
+                    "dry-run: would send a response with a test: %s",
+                    vacancy["alternate_url"],
+                )
+                return VacancyResponseResult(should_continue=True, accepted=True)
+
             try:
-                if not self.dry_run:
-                    result = self._solve_vacancy_test(
-                        vacancy_id=vacancy["id"],
-                        resume_hash=resume_id,
-                        letter=letter,
-                    )
-                    if result.get("success") == "true":
-                        print("📨 Отправили отклик на вакансию с тестом", vacancy["alternate_url"])
-                    else:
-                        err = result.get("error")
-                        if err == "negotiations-limit-exceeded":
-                            logger.warning("Достигли лимита на отклики")
-                            return False
-                        logger.error(
-                            "Произошла ошибка при отклике на вакансию с тестом: %s - %s",
-                            vacancy["alternate_url"],
-                            err,
-                        )
+                result = self._solve_vacancy_test(
+                    vacancy_id=vacancy["id"],
+                    resume_hash=resume_id,
+                    letter=letter,
+                )
             except Exception as ex:
                 logger.error("Произошла непредвиденная ошибка: %s", ex)
-            return True
+                return VacancyResponseResult(should_continue=True, accepted=False)
+
+            if str(result.get("success")).lower() == "true":
+                print("📨 Отправили отклик на вакансию с тестом", vacancy["alternate_url"])
+                return VacancyResponseResult(should_continue=True, accepted=True)
+
+            err = result.get("error")
+            if err == "negotiations-limit-exceeded":
+                logger.warning("Достигли лимита на отклики")
+                return VacancyResponseResult(should_continue=False, accepted=False)
+            logger.error(
+                "Произошла ошибка при отклике на вакансию с тестом: %s - %s",
+                vacancy["alternate_url"],
+                err,
+            )
+            return VacancyResponseResult(should_continue=True, accepted=False)
 
         params = {
             "resume_id": resume_id,
             "vacancy_id": vacancy["id"],
             "message": letter,
         }
+        if self.dry_run:
+            logger.info("dry-run: would send a response: %s", vacancy["alternate_url"])
+            return VacancyResponseResult(should_continue=True, accepted=True)
+
         try:
-            if not self.dry_run:
-                res = self.api_client.post(
-                    "/negotiations",
-                    params,
-                    delay=random.uniform(self.response_delay_min, self.response_delay_max),
+            res = self.api_client.post(
+                "/negotiations",
+                params,
+                delay=random.uniform(self.response_delay_min, self.response_delay_max),
+            )
+            if res != {}:
+                logger.warning(
+                    "Unexpected non-empty response while applying to %s: %r",
+                    vacancy["alternate_url"],
+                    res,
                 )
-                assert res == {}
-                print("📨 Отправили отклик на вакансию", vacancy["alternate_url"])
+            print("📨 Отправили отклик на вакансию", vacancy["alternate_url"])
+            return VacancyResponseResult(should_continue=True, accepted=True)
         except Redirect:
             logger.warning(
                 "Игнорирую перенаправление на форму: %s",
                 vacancy["alternate_url"],
             )
-            return True
+            return VacancyResponseResult(should_continue=True, accepted=False)
         except CaptchaRequired as ex:
             logger.warning("Требуется капча: %s", ex.captcha_url)
             try:
                 success = asyncio.run(self._solve_captcha_async(ex.captcha_url))
-                if success and not self.dry_run:
-                    res = self.api_client.post(
-                        "/negotiations",
-                        params,
-                        delay=random.uniform(self.response_delay_min, self.response_delay_max),
-                    )
-                    assert res == {}
-                    print(
-                        "📨 Отправили отклик на вакансию после капчи",
-                        vacancy["alternate_url"],
-                    )
-                elif not success:
+                if not success:
                     logger.error("Не удалось решить капчу")
                     raise RuntimeError("captcha failed")
+
+                res = self.api_client.post(
+                    "/negotiations",
+                    params,
+                    delay=random.uniform(self.response_delay_min, self.response_delay_max),
+                )
+                if res != {}:
+                    logger.warning(
+                        "Unexpected non-empty response while applying after captcha to %s: %r",
+                        vacancy["alternate_url"],
+                        res,
+                    )
+                print(
+                    "📨 Отправили отклик на вакансию после капчи",
+                    vacancy["alternate_url"],
+                )
+                return VacancyResponseResult(should_continue=True, accepted=True)
             except Exception as err:
                 logger.error("Ошибка при решении капчи: %s", err)
                 raise
-        return True
 
     def _send_vacancy_email_if_needed(
         self,
@@ -294,6 +339,12 @@ class ApplyVacanciesApplyFlowMixin:
         message_placeholders: dict[str, str],
     ) -> None:
         if not self.args.send_email:
+            return
+        if self.dry_run:
+            logger.info(
+                "dry-run: email was not sent for vacancy: %s",
+                vacancy["alternate_url"],
+            )
             return
 
         mail_to: str | list[str] | None = (vacancy.get("contacts") or {}).get("email")
@@ -337,6 +388,13 @@ class ApplyVacanciesApplyFlowMixin:
         )
         print("🚀 Начинаю рассылку откликов для резюме:", resume["title"])
 
+        if self._response_quota_reached():
+            logger.info(
+                "Reached application quota (%d); resume will not be processed",
+                self.max_responses,
+            )
+            return
+
         placeholders = {
             "first_name": user.get("first_name") or "",
             "last_name": user.get("last_name") or "",
@@ -353,6 +411,13 @@ class ApplyVacanciesApplyFlowMixin:
 
         for vacancy in self._get_vacancies(resume_id=resume["id"]):
             try:
+                if self._response_quota_reached():
+                    logger.info(
+                        "Reached application quota (%d); stopping this run",
+                        self.max_responses,
+                    )
+                    return
+
                 employer = vacancy.get("employer", {})
                 message_placeholders = {
                     "vacancy_name": vacancy.get("name", ""),
@@ -379,13 +444,23 @@ class ApplyVacanciesApplyFlowMixin:
                     resume,
                     message_placeholders,
                 )
-                do_apply = self._send_vacancy_response(vacancy, resume["id"], letter)
-                self._send_vacancy_email_if_needed(
-                    vacancy,
-                    employer_id,
-                    site_emails,
-                    message_placeholders,
-                )
+                result = self._send_vacancy_response(vacancy, resume["id"], letter)
+                if not isinstance(result, VacancyResponseResult):
+                    # Preserve the old private-method contract for custom
+                    # integrations which return a plain boolean.
+                    result = VacancyResponseResult(
+                        should_continue=bool(result),
+                        accepted=bool(result),
+                    )
+                do_apply = result.should_continue
+                if result.accepted:
+                    self.responses_sent += 1
+                    self._send_vacancy_email_if_needed(
+                        vacancy,
+                        employer_id,
+                        site_emails,
+                        message_placeholders,
+                    )
             except LimitExceeded:
                 do_apply = False
                 logger.warning("Достигли лимита на отклики")

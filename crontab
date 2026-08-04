@@ -9,13 +9,15 @@ SHELL=/bin/bash
 # Символ процента в кронтабе нужно экранировать
 # sleep с рандомной задержкой от 1 до 5 минут нужен во-первых чтобы токен обновиться успел, а во
 # вторых, чтобы антиспам не сработал
-0 */5 * * * /bin/bash -c 'sleep $((60 + RANDOM \% 241))' && cd /app && /bin/bash /app/scripts/all-profiles.sh update >> /var/log/cron.log 2>&1
+# Resume publication is intentionally disabled by default. Enable only after
+# an operator has reviewed the account and explicitly chooses `update --live`.
+#0 */5 * * * /bin/bash -c 'sleep $((60 + RANDOM \% 241))' && cd /app && /bin/bash /app/scripts/all-profiles.sh update --live >> /var/log/cron.log 2>&1
 
 # Рассылаем отклики с AI-письмами
-10 8-21 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh apply >> /var/log/cron.log 2>&1
+10 8-21 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh apply --dry-run >> /var/log/cron.log 2>&1
 
 # Итеративные AI-ответы работодателям (каждые 2 часа)
-25 9-21/2 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh reply >> /var/log/cron.log 2>&1
+25 9-21/2 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh reply --dry-run >> /var/log/cron.log 2>&1
 
 # Тест: каждые 5 минут (задержка до 1 минуты, чтобы не накладывались)
 #*/5 * * * * /bin/bash -c 'sleep $((1 + RANDOM \% 59))' && /usr/local/bin/python -m hh_applicant_tool apply-vacancies >> /var/log/cron.log 2>&1

@@ -83,14 +83,14 @@ nano config/config.yaml
 # Собираем образ
 docker compose build
 
-# Запускаем контейнер (crond + admin panel на port 8000)
+# Запускаем контейнер (crond + admin panel inside the container)
 docker compose up -d
 
 # Смотрим логи
 docker compose logs -f
 
-# Проверяем health
-curl http://localhost:8000/health
+# Проверяем health (the repository compose file publishes no host port by default)
+docker compose exec hh_applicant_tool curl http://localhost:8000/health
 
 # Заходим в контейнер
 docker compose exec hh_applicant_tool bash
@@ -100,14 +100,15 @@ docker compose exec hh_applicant_tool bash
 
 ```bash
 # Без Docker (требует Python 3.11+)
-poetry install
+poetry install --with dev
+poetry run python -m pip install --no-cache-dir -r admin/requirements.txt
 poetry run pytest tests/ -v
 
 # С coverage
 poetry run pytest tests/ -v --cov=src/hh_applicant_tool
 
-# С Docker
-docker compose run --rm hh_applicant_tool poetry run pytest tests/ -v
+# The production Docker image intentionally does not include Poetry or pytest.
+# Run tests in the local development environment or in CI.
 ```
 
 ## 🔧 CI/CD Pipeline (GitHub Actions)
@@ -187,9 +188,10 @@ HH_PROFILE_ID=xxxxx           # ✅ ОБЯЗАТЕЛЬНО
 CONFIG_DIR=/app/config        # Where to read config files
 LOG_DIR=/app/config           # Where to write logs
 LOG_LEVEL=INFO                # DEBUG, INFO, WARNING, ERROR
-ADMIN_ENABLED=true            # Run FastAPI admin panel
-ADMIN_USERNAME=admin          # Basic auth user
-ADMIN_PASSWORD=change_me      # ⚠️ Change this!
+# Basic Auth is active only when BOTH values are set. Keep both unset only
+# when the admin is intentionally reachable on localhost/loopback only.
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-long-random-password
 TZ=Europe/Moscow              # Timezone
 ```
 
@@ -200,14 +202,18 @@ services:
   hh_applicant_tool:
     image: hh_applicant_tool:latest
     environment:
-      - CONFIG_DIR=/app/config
-      - HH_PROFILE_ID=${HH_PROFILE_ID}          # Из .env
+      CONFIG_DIR: /app/config
+      HH_PROFILE_ID: "${HH_PROFILE_ID}"        # Из .env
+      ADMIN_USERNAME: "${ADMIN_USERNAME}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
     volumes:
       - ./config:/app/config:rw                 # Конфиги & логи
       - /etc/localtime:/etc/localtime:ro        # Синхронизация времени
     restart: unless-stopped
+    # The repository compose file intentionally exposes no host port.
+    # Add this only with both credentials configured:
     ports:
-      - "8000:8000"                             # Admin panel
+      - "127.0.0.1:8000:8000"                   # Admin panel, loopback only
 ```
 
 ### Запуск в production
@@ -221,7 +227,9 @@ docker-compose up -d
 docker run -d \
   --name hh-tool \
   -e HH_PROFILE_ID=12345 \
+  -e ADMIN_USERNAME="admin" \
   -e ADMIN_PASSWORD="secure_password" \
+  -p 127.0.0.1:8000:8000 \
   -e TZ=Europe/Moscow \
   -v /data/hh-config:/app/config \
   hh_applicant_tool:latest
@@ -281,27 +289,29 @@ docker compose down
 curl http://localhost:8000/health
 
 # Ответ:
-# {"status": "healthy", "timestamp": "2026-04-16T10:00:00Z"}
+# {"ok": true}
 ```
 
 ## 🔐 Security Best Practices
 
 ```bash
-# ❌ НЕТ
-docker run -e HH_PROFILE_ID=12345 -e ADMIN_PASSWORD=admin ...
+# ❌ НЕ ПУБЛИКОВАТЬ БЕЗ ПАРЫ УЧЁТНЫХ ДАННЫХ
+docker run -p 8000:8000 -e HH_PROFILE_ID=12345 ...
 
 # ✅ ДА
 # 1. Использовать .env файл (в .gitignore)
 cat > .env <<EOF
 HH_PROFILE_ID=12345
+ADMIN_USERNAME=admin
 ADMIN_PASSWORD=$(openssl rand -base64 16)
 EOF
 
 # 2. Использовать secrets (для production)
 docker run --env-file .env ...
 
-# 3. Непривилегированный пользователь (уже в Dockerfile)
-# 4. Читай-только volumes где возможно
+# 3. Публиковать admin только на loopback: -p 127.0.0.1:8000:8000
+# 4. Непривилегированный пользователь (уже в Dockerfile)
+# 5. Читай-только volumes где возможно
 docker run -v config/:/app/config:ro ...
 ```
 

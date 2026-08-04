@@ -81,23 +81,6 @@ ignore = [
 quote-style = "double"
 line-ending = "auto"
 
-[tool.pytest.ini_options]
-minversion = "7.0"
-testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
-addopts = "-v --strict-markers --tb=short --disable-warnings"
-markers = [
-    "unit: Unit tests",
-    "integration: Integration tests",
-    "edge_cases: Edge case tests",
-    "slow: Slow tests",
-    "utils: Tests for utils module",
-    "api: Tests for API module",
-    "storage: Tests for storage module",
-]
-
 [tool.coverage.run]
 source = ["src/hh_applicant_tool"]
 omit = ["*/tests/*", "*/test_*.py"]

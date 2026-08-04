@@ -3,13 +3,13 @@
 # daily.sh — Ежедневный workflow: подъём резюме + отклики + ответы
 #
 # Использование:
-#   ./scripts/daily.sh [--apply-only] [--reply-only] [--full]
+#   ./scripts/daily.sh [--apply-only] [--reply-only] [--full] [--dry-run|--live]
 #
 # Примеры:
-#   ./scripts/daily.sh                  # Полный workflow (resume + apply + reply)
-#   ./scripts/daily.sh --apply-only     # Только отклики
-#   ./scripts/daily.sh --reply-only     # Только ответы
-#   ./scripts/daily.sh --full           # Полный с dry-run сначала
+#   ./scripts/daily.sh                  # Полный dry-run workflow (по умолчанию)
+#   ./scripts/daily.sh --apply-only     # Только dry-run отклики
+#   ./scripts/daily.sh --reply-only     # Только dry-run ответы
+#   ./scripts/daily.sh --full --live    # Dry-run, затем реальный полный workflow
 #
 
 set -euo pipefail
@@ -34,8 +34,8 @@ REPLY_CHATS="${REPLY_CHATS:-50}"
 APPLY_ONLY=false
 REPLY_ONLY=false
 FULL=false
-DRY_RUN_FIRST=false
-DRY_RUN_ONLY=false
+RUN_MODE="dry-run"
+RUN_MODE_EXPLICIT=""
 
 # Парсинг аргументов
 while [[ $# -gt 0 ]]; do
@@ -50,11 +50,24 @@ while [[ $# -gt 0 ]]; do
             ;;
         --full)
             FULL=true
-            DRY_RUN_FIRST=true
             shift
             ;;
         --dry-run)
-            DRY_RUN_ONLY=true
+            if [[ "$RUN_MODE_EXPLICIT" == "live" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="dry-run"
+            RUN_MODE_EXPLICIT="dry-run"
+            shift
+            ;;
+        --live)
+            if [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="live"
+            RUN_MODE_EXPLICIT="live"
             shift
             ;;
         --search)
@@ -70,13 +83,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Использование: $0 [--apply-only] [--reply-only] [--full] [--dry-run] [--profile ID]"
+            echo "Использование: $0 [--apply-only] [--reply-only] [--full] [--dry-run|--live] [--profile ID]"
             echo ""
             echo "Опции:"
             echo "  --apply-only    Только отклики на вакансии"
             echo "  --reply-only    Только ответы работодателям"
-            echo "  --full          Полный workflow с dry-run сначала"
-            echo "  --dry-run       Только проверка без live-действий"
+            echo "  --full          Сначала выполнить dry-run; live только вместе с --live"
+            echo "  --dry-run       Только проверка без live-действий (по умолчанию)"
+            echo "  --live          Разрешить реальные действия"
             echo "  --search        Поисковый запрос для откликов"
             echo "  --limit         Лимит вакансий"
             echo "  --profile ID    Профиль аккаунта (по умолчанию: один основной аккаунт)"
@@ -112,90 +126,83 @@ print_step() {
     echo ""
 }
 
-# ============================================================================
-# Полный workflow
-# ============================================================================
+if [[ "$APPLY_ONLY" == true && "$REPLY_ONLY" == true ]]; then
+    echo "Нельзя использовать --apply-only и --reply-only одновременно" >&2
+    exit 1
+fi
 
-if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
-    print_header "Ежедневный workflow — Подъём резюме + Отклики + Ответы"
-    
-    # Шаг 1: Подъём резюме
-    print_step "Шаг 1/3 — Подъём резюме в топ"
-    if [[ "$DRY_RUN_ONLY" == true ]]; then
+run_apply() {
+    local mode="$1"
+    "$SCRIPT_DIR/apply.sh" "$mode" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+}
+
+run_reply() {
+    local mode="$1"
+    "$SCRIPT_DIR/reply.sh" "$mode" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+}
+
+run_preview_workflow() {
+    if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
+        print_step "Подъём резюме в топ"
         echo -e "${YELLOW}🧪 Dry-run: подъём резюме пропущен${NC}"
-    else
+        echo ""
+    fi
+
+    if [[ "$REPLY_ONLY" == false ]]; then
+        print_step "Отклики на вакансии (dry-run)"
+        run_apply --dry-run
+        echo ""
+    fi
+
+    if [[ "$APPLY_ONLY" == false ]]; then
+        print_step "Ответы работодателям (dry-run)"
+        run_reply --dry-run
+        echo ""
+    fi
+}
+
+run_live_workflow() {
+    if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
+        print_step "Подъём резюме в топ (live)"
         HH_CMD=(hh-applicant-tool --no-auto-auth)
         if [[ -n "${HH_PROFILE_ID:-}" ]]; then
             HH_CMD+=(--profile-id "$HH_PROFILE_ID")
         fi
         "${HH_CMD[@]}" boost-resume
-    fi
-    echo ""
-    
-    # Шаг 2: Отклики
-    print_step "Шаг 2/3 — Отклики на вакансии"
-    if [[ "$DRY_RUN_ONLY" == true ]]; then
-        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
-    elif [[ "$DRY_RUN_FIRST" == true ]]; then
-        echo -e "${YELLOW}🧪 Сначала dry-run...${NC}"
-        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
-        echo ""
-        echo -e "${YELLOW}⏸  Пауза 5 секунд перед live запуском...${NC}"
-        sleep 5
         echo ""
     fi
-    if [[ "$DRY_RUN_ONLY" == false ]]; then
-        "$SCRIPT_DIR/apply.sh" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+
+    if [[ "$REPLY_ONLY" == false ]]; then
+        print_step "Отклики на вакансии (live)"
+        run_apply --live
+        echo ""
     fi
-    echo ""
-    
-    # Шаг 3: Ответы
-    print_step "Шаг 3/3 — Ответы работодателям"
-    if [[ "$DRY_RUN_ONLY" == true ]]; then
-        "$SCRIPT_DIR/reply.sh" --dry-run --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+
+    if [[ "$APPLY_ONLY" == false ]]; then
+        print_step "Ответы работодателям (live)"
+        run_reply --live
+        echo ""
+    fi
+}
+
+if [[ "$RUN_MODE" == "dry-run" || "$FULL" == true ]]; then
+    if [[ "$FULL" == true && "$RUN_MODE" == "live" ]]; then
+        print_header "Dry-run перед явно подтверждённым live workflow"
     else
-        "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
+        print_header "Ежедневный workflow — Dry-run (live-действия отключены)"
     fi
-    echo ""
-    
-    print_header "✅ Ежедневный workflow завершён!"
-    exit 0
-fi
+    run_preview_workflow
 
-# ============================================================================
-# Только отклики
-# ============================================================================
-
-if [[ "$APPLY_ONLY" == true ]]; then
-    print_header "Отклики на вакансии"
-    
-    if [[ "$DRY_RUN_ONLY" == true ]]; then
-        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
+    if [[ "$RUN_MODE" == "dry-run" ]]; then
+        print_header "✅ Dry-run завершён. Live-действия не выполнялись."
+        echo -e "${YELLOW}Для реального запуска используйте: ${NC}$0 --live"
         exit 0
-    elif [[ "$DRY_RUN_FIRST" == true ]]; then
-        echo -e "${YELLOW}🧪 Сначала dry-run...${NC}"
-        "$SCRIPT_DIR/apply.sh" --dry-run --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
-        echo ""
-        echo -e "${YELLOW}⏸  Пауза 5 секунд перед live запуском...${NC}"
-        sleep 5
-        echo ""
     fi
-    
-    "$SCRIPT_DIR/apply.sh" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
-    exit 0
+
+    echo -e "${YELLOW}⚠️  --live указан явно: запускаем live workflow после dry-run.${NC}"
+    echo ""
 fi
 
-# ============================================================================
-# Только ответы
-# ============================================================================
-
-if [[ "$REPLY_ONLY" == true ]]; then
-    print_header "Ответы работодателям"
-    
-    if [[ "$DRY_RUN_ONLY" == true ]]; then
-        "$SCRIPT_DIR/reply.sh" --dry-run --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
-    else
-        "$SCRIPT_DIR/reply.sh" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
-    fi
-    exit 0
-fi
+print_header "Ежедневный workflow — LIVE"
+run_live_workflow
+print_header "✅ Ежедневный workflow завершён!"

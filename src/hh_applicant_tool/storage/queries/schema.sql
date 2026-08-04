@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS vacancy_contacts (
 CREATE TABLE IF NOT EXISTS vacancies (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
+    employer_id INTEGER,
     area_id INTEGER,
     area_name TEXT,
     salary_from INTEGER,

@@ -27,6 +27,10 @@ class ApplyVacanciesHelpersMixin:
     json_decoder = JSONDecoder()
 
     def _send_email(self, to: str, subject: str, body: str) -> None:
+        if getattr(self, "dry_run", False):
+            logger.info("dry-run: SMTP message was not sent to %s", to)
+            return
+
         cfg = self.tool.config.get("smtp", {})
         msg = EmailMessage()
         msg["Subject"] = subject

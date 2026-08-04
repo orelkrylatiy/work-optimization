@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -167,12 +168,22 @@ def test_run_operation_disables_auto_auth_for_admin_jobs(monkeypatch):
 
     response = admin_app._run_operation(
         "apply-vacancies",
-        admin_app.RunRequest(profile="account-2"),
+        admin_app.RunRequest(profile="account-2", confirm_live=True),
     )
 
     assert response["op_id"]
     assert "--no-auto-auth" in captured["cmd"]
     assert captured["cmd"].index("--no-auto-auth") < captured["cmd"].index("apply-vacancies")
+
+
+def test_run_operation_rejects_live_job_without_confirmation():
+    """The admin must reject a live job before creating a subprocess."""
+    client = TestClient(admin_app.app)
+
+    response = client.post("/api/run/update-resumes", json={"profile": "default"})
+
+    assert response.status_code == 409
+    assert "confirm_live" in response.json()["detail"]
 
 
 def test_logout_clears_token_and_cookies(tmp_path, monkeypatch):
@@ -239,7 +250,7 @@ def test_run_operation_uses_devnull_stdin(monkeypatch):
 
     admin_app._run_operation(
         "update-resumes",
-        admin_app.RunRequest(profile="default"),
+        admin_app.RunRequest(profile="default", confirm_live=True),
     )
 
     assert captured["stdin"] is admin_app.subprocess.DEVNULL, (
@@ -408,7 +419,7 @@ def test_agent_run_expired_triggers_refresh(tmp_path, monkeypatch):
         return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
 
     def fake_run_op(op, body, extra=None):
-        run_calls.append(op)
+        run_calls.append({"operation": op, "confirm_live": body.confirm_live})
         return {"op_id": "x1", "stdout": "started", "stderr": ""}
 
     monkeypatch.setattr(admin_app, "_refresh_token_sync", fake_refresh)
@@ -416,7 +427,12 @@ def test_agent_run_expired_triggers_refresh(tmp_path, monkeypatch):
 
     response = client.post(
         "/api/agent/run",
-        json={"profile": "agent-ref", "operation": "update-resumes", "auto_refresh": True},
+        json={
+            "profile": "agent-ref",
+            "operation": "update-resumes",
+            "auto_refresh": True,
+            "confirm_live": True,
+        },
     )
 
     assert response.status_code == 200
@@ -424,7 +440,7 @@ def test_agent_run_expired_triggers_refresh(tmp_path, monkeypatch):
     assert data["refreshed_token"] is True
     assert data["op_id"] == "x1"
     assert refresh_calls == ["agent-ref"]
-    assert run_calls == ["update-resumes"]
+    assert run_calls == [{"operation": "update-resumes", "confirm_live": True}]
 
 
 def test_agent_run_invalid_operation(tmp_path, monkeypatch):
@@ -570,7 +586,11 @@ def test_apply_full_passes_letter_file_arg(tmp_path, monkeypatch):
 
     assert "--letter-file" in args
     letter_path_idx = args.index("--letter-file") + 1
-    assert args[letter_path_idx].endswith("_letter_tmp.txt")
+    letter_path = Path(args[letter_path_idx])
+    assert letter_path.parent == tmp_path / "tpl-apply" / ".admin-tmp"
+    assert letter_path.name.startswith("letter-")
+    assert letter_path.suffix == ".txt"
+    assert letter_path.exists()
 
 
 def test_apply_full_uses_improved_system_prompt(tmp_path, monkeypatch):
@@ -596,21 +616,15 @@ def test_apply_full_uses_improved_system_prompt(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_inbox_reply_fetches_history_when_use_ai(tmp_path, monkeypatch):
-    """send_reply with use_ai=True should load conversation history from HH API."""
-    import time
+    """AI reply generation should return a draft without sending a message."""
 
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     client = TestClient(admin_app.app)
     client.post("/api/profiles", json={"profile": "reply-hist"})
-    cfg = tmp_path / "reply-hist" / "config.json"
-    cfg.write_text(
-        json.dumps({"token": {"access_token": "tok", "access_expires_at": time.time() + 3600},
-                    "openai": {"api_key": "sk-test", "model": "gpt-4o-mini"}}),
-        encoding="utf-8",
-    )
 
     hh_calls = []
     ai_calls = []
+    posts = []
 
     def fake_hh_get(profile, path, params=None):
         hh_calls.append(path)
@@ -622,13 +636,18 @@ def test_inbox_reply_fetches_history_when_use_ai(tmp_path, monkeypatch):
             ], "pages": 1}
         return {}
 
-    def fake_call_openai(cfg_path, system, user, max_tokens=400):
-        ai_calls.append(user)
-        return "Добрый день! Удобно в среду с 14:00."
+    class FakeAIClient:
+        def complete(self, prompt):
+            ai_calls.append(prompt)
+            return "Добрый день! Удобно в среду с 14:00."
 
     monkeypatch.setattr(admin_app, "_hh_get", fake_hh_get)
-    monkeypatch.setattr(admin_app, "_hh_post", lambda *a, **k: {})
-    monkeypatch.setattr(admin_app, "_call_openai", fake_call_openai)
+    monkeypatch.setattr(
+        admin_app,
+        "_hh_post",
+        lambda profile, path, payload: posts.append((profile, path, payload)) or {},
+    )
+    monkeypatch.setattr(admin_app, "_make_ai_client", lambda *args, **kwargs: FakeAIClient())
 
     resp = client.post("/api/inbox/12345/reply", json={
         "profile": "reply-hist",
@@ -640,31 +659,30 @@ def test_inbox_reply_fetches_history_when_use_ai(tmp_path, monkeypatch):
     })
 
     assert resp.status_code == 200
-    assert resp.json()["sent"] == "Добрый день! Удобно в среду с 14:00."
-    # Проверяем что история загружалась
+    assert resp.json()["draft"] == "Добрый день! Удобно в среду с 14:00."
+    assert resp.json()["sent"] is False
+    assert posts == []
     assert any("messages" in p for p in hh_calls)
-    # Проверяем что история попала в AI prompt
     assert any("Когда вам удобно" in u for u in ai_calls)
 
 
 def test_inbox_reply_uses_provided_history(tmp_path, monkeypatch):
-    """send_reply should use history from request body without fetching from HH API."""
+    """Provided history should be used to create a draft without a history fetch."""
     monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
     client = TestClient(admin_app.app)
     client.post("/api/profiles", json={"profile": "reply-prov"})
-    (tmp_path / "reply-prov" / "config.json").write_text(
-        json.dumps({"openai": {"api_key": "sk-x"}}), encoding="utf-8"
-    )
 
     hh_calls = []
     ai_prompts = []
 
     monkeypatch.setattr(admin_app, "_hh_get", lambda *a, **k: (hh_calls.append(a), {})[1])
-    monkeypatch.setattr(admin_app, "_hh_post", lambda *a, **k: {})
-    monkeypatch.setattr(
-        admin_app, "_call_openai",
-        lambda cfg, sys, user, **kw: (ai_prompts.append(user), "Ответ агента")[1],
-    )
+
+    class FakeAIClient:
+        def complete(self, prompt):
+            ai_prompts.append(prompt)
+            return "Ответ агента"
+
+    monkeypatch.setattr(admin_app, "_make_ai_client", lambda *args, **kwargs: FakeAIClient())
 
     resp = client.post("/api/inbox/99/reply", json={
         "profile": "reply-prov",
@@ -676,10 +694,38 @@ def test_inbox_reply_uses_provided_history(tmp_path, monkeypatch):
     })
 
     assert resp.status_code == 200
-    # HH API за сообщениями не обращался
+    assert resp.json()["draft"] == "Ответ агента"
+    assert resp.json()["sent"] is False
     assert not any("messages" in str(c) for c in hh_calls)
-    # Но история из тела попала в промпт
     assert any("Привет" in p for p in ai_prompts)
+
+
+def test_inbox_reply_requires_confirmation_before_sending(monkeypatch):
+    """A generated or manual reply only reaches HH after explicit confirmation."""
+    client = TestClient(admin_app.app)
+    posts = []
+    monkeypatch.setattr(
+        admin_app,
+        "_hh_post",
+        lambda profile, path, payload: posts.append((profile, path, payload)) or {},
+    )
+    body = {"profile": "reply-send", "message": "Спасибо за приглашение!", "send": True}
+
+    unconfirmed = client.post("/api/inbox/77/reply", json=body)
+
+    assert unconfirmed.status_code == 409
+    assert posts == []
+
+    confirmed = client.post(
+        "/api/inbox/77/reply",
+        json={**body, "confirm_live": True},
+    )
+
+    assert confirmed.status_code == 200
+    assert confirmed.json()["sent"] == "Спасибо за приглашение!"
+    assert posts == [
+        ("reply-send", "/negotiations/77/messages", {"message": "Спасибо за приглашение!"})
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +891,14 @@ def test_add_to_blacklist_calls_hh_api(tmp_path, monkeypatch):
         lambda profile, method, path, **kw: (calls.append((method, path)), {})[1],
     )
 
-    resp = client.post("/api/employers/blacklist/12345?profile=bl-test")
+    unconfirmed = client.post("/api/employers/blacklist/12345?profile=bl-test")
+
+    assert unconfirmed.status_code == 409
+    assert calls == []
+
+    resp = client.post(
+        "/api/employers/blacklist/12345?profile=bl-test&confirm_live=true"
+    )
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -895,6 +948,7 @@ def test_reply_employers_run_builds_correct_args(monkeypatch):
             use_ai=True,
             only_invitations=True,
             max_pages=5,
+            confirm_live=True,
         )
     )
 
@@ -925,6 +979,7 @@ def test_agent_run_allows_reply_employers(tmp_path, monkeypatch):
     resp = client.post("/api/agent/run", json={
         "profile": "agent-reply",
         "operation": "reply-employers",
+        "confirm_live": True,
         "args": ["--use-ai", "--only-invitations"],
     })
 
@@ -955,7 +1010,7 @@ def test_agent_run_with_apply_params(tmp_path, monkeypatch):
     def fake_run_op(op, req_body, extra=None):
         # apply_params args are passed via req_body.extra_args, not extra
         combined = list(extra or []) + list(req_body.extra_args or [])
-        run_calls.append({"op": op, "extra": combined})
+        run_calls.append({"op": op, "extra": combined, "confirm_live": req_body.confirm_live})
         return {"op_id": "p1", "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(admin_app, "_run_operation", fake_run_op)
@@ -963,9 +1018,11 @@ def test_agent_run_with_apply_params(tmp_path, monkeypatch):
     resp = client.post("/api/agent/run", json={
         "profile": "agent-params",
         "operation": "apply-vacancies",
+        "confirm_live": True,
         "apply_params": {
             "profile": "agent-params",
             "search": "Python",
+            "resume_id": "resume-123",
             "use_ai": True,
             "force_message": True,
             "skip_tests": True,
@@ -979,3 +1036,159 @@ def test_agent_run_with_apply_params(tmp_path, monkeypatch):
     assert "Python" in extra
     assert "--use-ai" in extra
     assert "--force-message" in extra
+    assert "--resume-id" in extra
+    assert "resume-123" in extra
+    assert run_calls[0]["confirm_live"] is True
+
+
+# ---------------------------------------------------------------------------
+# Aggregate account data and safety boundaries
+# ---------------------------------------------------------------------------
+
+
+def test_all_scope_aggregates_account_stats_and_lists_resumes(tmp_path, monkeypatch):
+    """All-account views combine local snapshots and retain the account on each row."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+
+    for profile in ("account-a", "account-b"):
+        response = client.post("/api/profiles", json={"profile": profile})
+        assert response.status_code == 200
+
+    rows = [
+        ("account-a", "resume-a", "Frontend A", 11, 3, "2026-07-30T10:00:00+00:00"),
+        ("account-b", "resume-b", "Frontend B", 17, 5, "2026-07-31T10:00:00+00:00"),
+    ]
+    for profile, resume_id, title, total_views, new_views, updated_at in rows:
+        with sqlite3.connect(tmp_path / profile / "data") as conn:
+            conn.execute(
+                """
+                INSERT INTO resumes (
+                    id, title, url, alternate_url, status_id, status_name,
+                    can_publish_or_update, total_views, new_views, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resume_id,
+                    title,
+                    f"https://hh.example/resume/{resume_id}",
+                    f"https://hh.example/resume/{resume_id}/alternate",
+                    "published",
+                    "Published",
+                    True,
+                    total_views,
+                    new_views,
+                    updated_at,
+                    updated_at,
+                ),
+            )
+
+    accounts = client.get("/api/accounts")
+    resumes = client.get("/api/resumes", params={"profile": "account-a", "scope": "all"})
+    stats = client.get("/api/stats", params={"profile": "account-a", "scope": "all"})
+
+    assert accounts.status_code == 200
+    assert {item["profile"] for item in accounts.json()["accounts"]} == {
+        "account-a",
+        "account-b",
+    }
+    assert resumes.status_code == 200
+    resume_payload = resumes.json()
+    assert resume_payload["scope"] == "all"
+    assert resume_payload["total"] == 2
+    assert resume_payload["unavailable_profiles"] == []
+    assert {
+        (item["profile"], item["id"], item["title"], item["total_views"], item["new_views"])
+        for item in resume_payload["items"]
+    } == {
+        ("account-a", "resume-a", "Frontend A", 11, 3),
+        ("account-b", "resume-b", "Frontend B", 17, 5),
+    }
+    assert stats.status_code == 200
+    stats_payload = stats.json()
+    assert stats_payload["scope"] == "all"
+    assert stats_payload["totals"]["resumes"] == 2
+    assert {
+        item["profile"]: item["resumes"] for item in stats_payload["profile_totals"]
+    } == {"account-a": 1, "account-b": 1}
+
+
+def test_config_never_reveals_secrets_via_query_parameter(tmp_path, monkeypatch):
+    """The former show_secrets escape hatch must not return config credentials."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "secret-account"})
+    (tmp_path / "secret-account" / "config.json").write_text(
+        json.dumps(
+            {
+                "token": {"access_token": "VERY_SECRET_TOKEN"},
+                "openai": {"api_key": "VERY_SECRET_AI_KEY"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    masked = client.get("/api/config?profile=secret-account")
+    rejected = client.get("/api/config?profile=secret-account&show_secrets=true")
+
+    assert masked.status_code == 200
+    assert "VERY_SECRET_TOKEN" not in masked.text
+    assert "VERY_SECRET_AI_KEY" not in masked.text
+    assert rejected.status_code == 403
+    assert "never returned" in rejected.json()["detail"]
+
+
+def test_live_apply_requires_confirmation_and_builds_cli_args(tmp_path, monkeypatch):
+    """Live apply must be confirmed and serialize multi-value filters losslessly."""
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    client = TestClient(admin_app.app)
+    client.post("/api/profiles", json={"profile": "apply-account"})
+    calls = []
+
+    def fake_run_operation(operation, request, extra=None):
+        calls.append(
+            {
+                "operation": operation,
+                "confirm_live": request.confirm_live,
+                "extra": list(extra or []),
+            }
+        )
+        return {"op_id": "apply-op", "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(admin_app, "_run_operation", fake_run_operation)
+    request_body = {
+        "profile": "apply-account",
+        "resume_id": "resume-77",
+        "search": "React developer",
+        "schedule": ["remote"],
+        "employment": ["full", "project"],
+        "area": ["1", "2"],
+        "max_responses": 7,
+        "response_delay": "2-3",
+        "per_page": 25,
+        "total_pages": 2,
+    }
+
+    unconfirmed = client.post("/api/run/apply-vacancies-full", json=request_body)
+
+    assert unconfirmed.status_code == 409
+    assert calls == []
+
+    confirmed = client.post(
+        "/api/run/apply-vacancies-full",
+        json={**request_body, "confirm_live": True},
+    )
+
+    assert confirmed.status_code == 200
+    assert calls[0]["operation"] == "apply-vacancies"
+    assert calls[0]["confirm_live"] is True
+    args = calls[0]["extra"]
+    assert args[args.index("--resume-id") + 1] == "resume-77"
+    assert args[args.index("--schedule") + 1] == "remote"
+    assert args.count("--schedule") == 1
+    employment_index = args.index("--employment")
+    assert args[employment_index + 1 : employment_index + 3] == ["full", "project"]
+    area_index = args.index("--area")
+    assert args[area_index + 1 : area_index + 3] == ["1", "2"]
+    assert args[args.index("--max-responses") + 1] == "7"
+    assert args[args.index("--response-delay") + 1] == "2-3"

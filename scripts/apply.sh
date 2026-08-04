@@ -3,11 +3,11 @@
 # apply.sh — Отклики на вакансии HH.ru
 #
 # Использование:
-#   ./scripts/apply.sh [--dry-run] [--search "QUERY"] [--limit N]
+#   ./scripts/apply.sh [--dry-run|--live] [--search "QUERY"] [--limit N]
 #
 # Примеры:
-#   ./scripts/apply.sh --dry-run                    # Пробный запуск
-#   ./scripts/apply.sh                              # Live запуск
+#   ./scripts/apply.sh                              # Пробный запуск (по умолчанию)
+#   ./scripts/apply.sh --live                       # Live запуск (требует явного подтверждения)
 #   ./scripts/apply.sh --search "React Developer"   # Свой поисковый запрос
 #   ./scripts/apply.sh --limit 100                  # Лимит вакансий
 #
@@ -31,11 +31,26 @@ SYSTEM_PROMPT="${SYSTEM_PROMPT:-$PROJECT_ROOT/prompts/cover_letter_frontend.txt}
 EXCLUDED_FILTER="${EXCLUDED_FILTER:-junior|стажир|bitrix|web3|crypto|blockchain|golang|python|java|1c|продакт|менеджер|pm|дизайнер|qa|тестировщик|devops|аналитик|data|sales|продаж|рекрутер|hr|без опыта|trainee|казань|спб|минск|open\s*space|опенспейс}"
 
 # Парсинг аргументов
-DRY_RUN=""
+RUN_MODE="dry-run"
+RUN_MODE_EXPLICIT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)
-            DRY_RUN="--dry-run"
+            if [[ "$RUN_MODE_EXPLICIT" == "live" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="dry-run"
+            RUN_MODE_EXPLICIT="dry-run"
+            shift
+            ;;
+        --live)
+            if [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="live"
+            RUN_MODE_EXPLICIT="live"
             shift
             ;;
         --search)
@@ -59,10 +74,11 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Использование: $0 [--dry-run] [--search \"QUERY\"] [--limit N] [--system-prompt FILE] [--profile ID]"
+            echo "Использование: $0 [--dry-run|--live] [--search \"QUERY\"] [--limit N] [--system-prompt FILE] [--profile ID]"
             echo ""
             echo "Опции:"
-            echo "  --dry-run              Пробный запуск без отправки"
+            echo "  --dry-run              Пробный запуск без отправки (по умолчанию)"
+            echo "  --live                 Разрешить реальную отправку откликов"
             echo "  --search \"QUERY\"       Поисковый запрос (по умолчанию: \"Frontend разработчик\")"
             echo "  --limit N              Лимит вакансий (по умолчанию: 100)"
             echo "  --system-prompt FILE   Системный промпт для AI"
@@ -130,10 +146,10 @@ echo -e "${YELLOW}Поисковый запрос:${NC} $SEARCH_QUERY"
 echo -e "${YELLOW}Лимит вакансий:${NC} $LIMIT"
 echo -e "${YELLOW}Системный промпт:${NC} $SYSTEM_PROMPT"
 echo -e "${YELLOW}Режим писем:${NC} AI (config-driven provider)"
-if [[ -n "$DRY_RUN" ]]; then
+if [[ "$RUN_MODE" == "dry-run" ]]; then
     echo -e "${YELLOW}Режим:${NC} ${RED}DRY-RUN (без отправки)${NC}"
 else
-    echo -e "${YELLOW}Режим:${NC} ${GREEN}LIVE${NC}"
+    echo -e "${YELLOW}Режим:${NC} ${GREEN}LIVE (явно включён через --live)${NC}"
 fi
 echo ""
 
@@ -152,6 +168,11 @@ if [[ -n "${HH_PROFILE_ID:-}" ]]; then
     HH_CMD+=(--profile-id "$HH_PROFILE_ID")
 fi
 
+APPLY_MODE_ARGS=()
+if [[ "$RUN_MODE" == "dry-run" ]]; then
+    APPLY_MODE_ARGS+=(--dry-run)
+fi
+
 "${HH_CMD[@]}" apply-vacancies \
     --search "$SEARCH_QUERY" \
     --ai \
@@ -159,15 +180,16 @@ fi
     --force-message \
     --excluded-filter "$EXCLUDED_FILTER" \
     --skip-tests \
+    --max-responses "$LIMIT" \
     --per-page "$PER_PAGE" \
     --total-pages "$TOTAL_PAGES" \
-    $DRY_RUN
+    "${APPLY_MODE_ARGS[@]}"
 
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [[ -n "$DRY_RUN" ]]; then
+if [[ "$RUN_MODE" == "dry-run" ]]; then
     echo -e "${GREEN}✅ Dry-run завершён. Проверьте вывод выше.${NC}"
-    echo -e "${YELLOW}Для live запуска запустите: ${NC}./scripts/apply.sh"
+    echo -e "${YELLOW}Для live запуска запустите: ${NC}./scripts/apply.sh --live"
 else
     echo -e "${GREEN}✅ Отклики завершены!${NC}"
 fi

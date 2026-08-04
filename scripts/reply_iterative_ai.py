@@ -16,15 +16,16 @@ import requests
 from hh_applicant_tool.constants import CONFIG_DIR
 from hh_applicant_tool.utils.config import resolve_profile_config_dir
 
-NAME = (os.environ.get("HH_NAME") or "Максим").strip()
-TELEGRAM = (
-    os.environ.get("HH_TELEGRAM")
-    or os.environ.get("TELEGRAM")
-    or "@maxxwway"
-).strip()
+NAME = (os.environ.get("HH_NAME") or "").strip()
+TELEGRAM = (os.environ.get("HH_TELEGRAM") or os.environ.get("TELEGRAM") or "").strip()
 MAX_ITERATIONS = int(os.environ.get("ITERATIONS") or os.environ.get("REPLY_ITERATIONS") or "6")
 CHATS_PER_ITERATION = int(os.environ.get("CHATS") or os.environ.get("REPLY_CHATS") or "50")
-DRY_RUN = "--dry-run" in sys.argv
+if "--live" in sys.argv and "--dry-run" in sys.argv:
+    raise SystemExit("Use either --live or --dry-run, not both.")
+
+# This worker can also be invoked directly, so it must fail closed rather than
+# relying on reply.sh to supply a dry-run flag.
+DRY_RUN = "--live" not in sys.argv
 PAUSE_BETWEEN_REQUESTS = 2.0
 PAUSE_BETWEEN_ITERATIONS = 120
 MAX_RETRIES = 3
@@ -69,13 +70,24 @@ AI_URL = _ai_cfg.get('base_url', 'http://localhost:11434/v1/chat/completions')
 AI_MODEL = _ai_cfg.get('model', 'qwen2.5:14b')
 AI_API_KEY = _ai_cfg.get('api_key', 'ollama')
 
-DEFAULT_SYSTEM_PROMPT = f"""Ты — {NAME}, Frontend-разработчик (React/TypeScript/Redux, 5+ лет).
+_candidate_identity = (
+    f"Ты — {NAME}, Frontend-разработчик (React/TypeScript/Redux, 5+ лет)."
+    if NAME
+    else "Ты — Frontend-разработчик (React/TypeScript/Redux, 5+ лет)."
+)
+_contact_rule = (
+    f"3. При необходимости можешь указать Telegram для связи: {TELEGRAM}"
+    if TELEGRAM
+    else "3. Не выдумывай контактные данные и не обещай связь в стороннем мессенджере"
+)
+
+DEFAULT_SYSTEM_PROMPT = f"""{_candidate_identity}
 Отвечаешь работодателям в чате HH.ru.
 
 ПРАВИЛА:
 1. Пиши ТОЛЬКО на русском языке, без английских вставок
 2. 2-4 предложения, кратко и по делу
-3. Всегда упоминай Telegram: {TELEGRAM} для связи
+{_contact_rule}
 4. Анализируй историю переписки ПЕРЕД ответом:
    - Если работодатель задал вопрос → ответь на КОНКРЕТНЫЙ вопрос
    - Если первое сообщение после отклика → поблагодари + предложи созвон
@@ -129,14 +141,15 @@ def has_unresolved_placeholders(text: str) -> bool:
 
 
 def build_safe_reply(initiated_by_us: bool) -> str:
+    contact = f" Telegram: {TELEGRAM}" if TELEGRAM else ""
     if initiated_by_us:
         return (
             f"Здравствуйте! Спасибо за сообщение. Готов обсудить детали вакансии "
-            f"и ответить на вопросы. Telegram: {TELEGRAM}"
+            f"и ответить на вопросы.{contact}"
         )
     return (
         f"Здравствуйте! Спасибо за приглашение. Готов обсудить детали вакансии "
-        f"и ответить на вопросы. Telegram: {TELEGRAM}"
+        f"и ответить на вопросы.{contact}"
     )
 
 
@@ -257,7 +270,7 @@ def generate_reply_ai(context, vacancy_name, employer_name, initiated_by_us=True
             print("   ⚠️  AI вернул placeholder'ы; ответ не будет отправлен")
             return None
 
-        if TELEGRAM not in reply:
+        if TELEGRAM and TELEGRAM not in reply:
             reply += f"\n\nTelegram: {TELEGRAM}"
 
         return reply
@@ -289,21 +302,41 @@ def send_reply(neg_id, message):
         return False, f'{type(e).__name__}: {e}'
 
 
-def process_iteration(iteration_num):
-    """Обрабатывает одну итерацию чатов."""
+def collect_active_negotiations(max_count: int):
+    """Read a bounded snapshot before replying can reorder HH's pages."""
+    negotiations = []
+    seen_ids = set()
+    page = 0
+    while len(negotiations) < max_count:
+        page_items = get_negotiations(page=page, per_page=CHATS_PER_ITERATION)
+        if not page_items:
+            break
+        for item in page_items:
+            neg_id = item.get("id")
+            if neg_id and neg_id not in seen_ids:
+                negotiations.append(item)
+                seen_ids.add(neg_id)
+                if len(negotiations) >= max_count:
+                    break
+        if len(page_items) < CHATS_PER_ITERATION:
+            break
+        page += 1
+    return negotiations
+
+
+def process_iteration(iteration_num, negotiations):
+    """Process one already-snapshotted batch of conversations."""
     print(f"\n{'='*60}")
-    print(f"📬 ИТЕРАЦИЯ {iteration_num}/{MAX_ITERATIONS} — обработка {CHATS_PER_ITERATION} чатов")
+    print(f"📬 ИТЕРАЦИЯ {iteration_num}/{MAX_ITERATIONS} — обработка {len(negotiations)} чатов")
     print(f"{'='*60}")
 
-    negotiations = get_negotiations(page=0, per_page=CHATS_PER_ITERATION)
-
     if not negotiations:
-        print("❌ Нет активных переговоров")
         return 0, 0, {}
 
     # Счётчики для статистики
     stats = {
         'replied': 0,
+        'planned': 0,
         'skipped_no_reply': 0,
         'skipped_discarded': 0,
         'skipped_error': 0,
@@ -335,14 +368,19 @@ def process_iteration(iteration_num):
             stats['skipped_no_reply'] += 1
             continue
 
-        # Генерируем персонализированный AI-ответ
+        # A dry run does not send employer chat data to an AI provider.  It
+        # still exposes a deterministic draft for operator review.
         initiator = "мы откликнулись" if initiated_by_us else "нас пригласили"
         print(f"\n✍️  Чат #{i}/{len(negotiations)} — {vacancy_name}")
         print(f"   Компания: {employer_name}")
         print(f"   Статус: {state_name or state_id or 'active'} | Инициатор: {initiator}")
         print(f"   Сообщений в истории: {len(messages)}")
 
-        reply = generate_reply_ai(context or [], vacancy_name, employer_name, initiated_by_us)
+        reply = (
+            build_safe_reply(initiated_by_us)
+            if DRY_RUN
+            else generate_reply_ai(context or [], vacancy_name, employer_name, initiated_by_us)
+        )
 
         if not reply:
             stats['skipped_error'] += 1
@@ -361,8 +399,12 @@ def process_iteration(iteration_num):
         for attempt in range(MAX_RETRIES):
             success, error_msg = send_reply(neg_id, reply)
             if success:
-                stats['replied'] += 1
-                print(f"   ✅ Отправлено (попытка {attempt + 1}/{MAX_RETRIES})")
+                if DRY_RUN:
+                    stats['planned'] += 1
+                    print("   🧪 Запланировано (без отправки)")
+                else:
+                    stats['replied'] += 1
+                    print(f"   ✅ Отправлено (попытка {attempt + 1}/{MAX_RETRIES})")
                 break
             print(f"   ⚠️  Попытка {attempt + 1}/{MAX_RETRIES}: {error_msg}")
             if attempt < MAX_RETRIES - 1:
@@ -378,22 +420,26 @@ def process_iteration(iteration_num):
             print(f"   ❌ Не отправлено после {MAX_RETRIES} попыток")
 
         # Rate limiting между запросами
-        if i < len(negotiations):
+        if not DRY_RUN and i < len(negotiations):
             time.sleep(PAUSE_BETWEEN_REQUESTS)
 
     print(f"\n📊 Итоги итерации {iteration_num}:")
-    print(f"   ✅ Ответил: {stats['replied']}")
+    if DRY_RUN:
+        print(f"   🧪 Запланировано: {stats['planned']}")
+    else:
+        print(f"   ✅ Ответил: {stats['replied']}")
     print(f"   ⏭️  Пропущено (не требуется ответ): {stats['skipped_no_reply']}")
     print(f"   🚫 Пропущено (отказ/закрыто): {stats['skipped_discarded']}")
     print(f"   ❌ Ошибки отправки: {stats['skipped_error']}")
 
-    return stats['replied'], stats['skipped_no_reply'] + stats['skipped_discarded'] + stats['skipped_error'], stats
+    completed = stats['planned'] if DRY_RUN else stats['replied']
+    return completed, stats['skipped_no_reply'] + stats['skipped_discarded'] + stats['skipped_error'], stats
 
 
 def main() -> int:
     profile_label = f" [{PROFILE_ID}]" if PROFILE_ID else ""
     print(f"🚀 Запуск итеративных AI-ответов работодателям{profile_label}")
-    print(f"   Telegram для связи: {TELEGRAM}")
+    print(f"   Telegram для связи: {TELEGRAM or 'не настроен'}")
     print(f"   Максимум итераций: {MAX_ITERATIONS}")
     print(f"   Чатов за итерацию: {CHATS_PER_ITERATION}")
     print(f"   Модель AI: {AI_MODEL} ({AI_URL})")
@@ -409,9 +455,17 @@ def main() -> int:
     iterations_completed = 0
 
     try:
-        for iteration in range(1, MAX_ITERATIONS + 1):
+        snapshot_limit = CHATS_PER_ITERATION if DRY_RUN else MAX_ITERATIONS * CHATS_PER_ITERATION
+        negotiations = collect_active_negotiations(snapshot_limit)
+        if not negotiations:
+            print("\n✅ Нет активных переговоров")
+            return 0
+        print(f"   Снимок активных переговоров: {len(negotiations)}")
+
+        for iteration, start in enumerate(range(0, len(negotiations), CHATS_PER_ITERATION), start=1):
             iterations_completed = iteration
-            replied, skipped, stats = process_iteration(iteration)
+            batch = negotiations[start:start + CHATS_PER_ITERATION]
+            replied, skipped, stats = process_iteration(iteration, batch)
             total_replied += replied
             total_skipped += skipped
             if stats and stats.get('errors'):
@@ -422,11 +476,7 @@ def main() -> int:
                 print("\n✅ Dry-run завершён после одной итерации")
                 break
 
-            if replied == 0:
-                print("\n✅ Все чаты обработаны — новых ответов не требуется")
-                break
-
-            if iteration < MAX_ITERATIONS:
+            if start + CHATS_PER_ITERATION < len(negotiations):
                 print(f"\n⏳ Пауза {PAUSE_BETWEEN_ITERATIONS} сек перед следующей итерацией...")
                 time.sleep(PAUSE_BETWEEN_ITERATIONS)
     except RuntimeError as exc:
@@ -436,7 +486,8 @@ def main() -> int:
     # Финальная статистика
     print(f"\n{'='*60}")
     print("✅ ЗАВЕРШЕНО")
-    print(f"   Всего ответов отправлено: {total_replied}")
+    total_label = "Всего ответов запланировано" if DRY_RUN else "Всего ответов отправлено"
+    print(f"   {total_label}: {total_replied}")
     print(f"   Всего чатов пропущено: {total_skipped}")
     print(f"   Итераций выполнено: {iterations_completed}")
     

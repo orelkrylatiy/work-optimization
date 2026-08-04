@@ -9,6 +9,7 @@ class VacancyModel(BaseModel):
     id: int
     name: str
     alternate_url: str
+    employer_id: int | None = mapped(path="employer.id", default=None)
     area_id: int = mapped(path="area.id")
     area_name: str = mapped(path="area.name")
     salary_from: int = mapped(path="salary.from", default=None)

@@ -3,10 +3,11 @@
 # all-profiles.sh — запускает команду параллельно для всех профилей
 #
 # Использование:
-#   ./scripts/all-profiles.sh apply          # отклики для всех аккаунтов
-#   ./scripts/all-profiles.sh reply          # ответы для всех аккаунтов
-#   ./scripts/all-profiles.sh daily          # полный workflow для всех аккаунтов
-#   ./scripts/all-profiles.sh apply --dry-run
+#   ./scripts/all-profiles.sh apply          # dry-run откликов для всех аккаунтов
+#   ./scripts/all-profiles.sh reply          # dry-run ответов для всех аккаунтов
+#   ./scripts/all-profiles.sh daily          # dry-run workflow для всех аккаунтов
+#   ./scripts/all-profiles.sh apply --live   # реальные отклики только с явным --live
+#   ./scripts/all-profiles.sh update --live  # реальная публикация резюме
 #
 # Профили задаются в переменной PROFILES (через пробел) или в файле .profiles
 # Пример .profiles (по одному на строку, без комментариев):
@@ -61,6 +62,30 @@ case "$COMMAND" in
         exit 1
         ;;
 esac
+
+# Resume publication changes an HH account and its operation has no native
+# dry-run flag.  It must therefore be explicitly enabled even through this
+# multi-profile convenience wrapper.  Token refresh is deliberately excluded:
+# it only maintains local credentials and does not contact employers.
+if [[ "$COMMAND" == "boost" || "$COMMAND" == "update" ]]; then
+    LIVE_CONFIRMED=false
+    FILTERED_ARGS=()
+    for arg in "${ARGS[@]}"; do
+        case "$arg" in
+            --live) LIVE_CONFIRMED=true ;;
+            --dry-run)
+                echo "❌ $COMMAND has no preview mode; it was not started. Use --live after reviewing the account."
+                exit 1
+                ;;
+            *) FILTERED_ARGS+=("$arg") ;;
+        esac
+    done
+    if [[ "$LIVE_CONFIRMED" != true ]]; then
+        echo "❌ $COMMAND publishes resumes. Re-run with --live to confirm."
+        exit 1
+    fi
+    ARGS=("${FILTERED_ARGS[@]}")
+fi
 
 LOG_DIR="${HH_PROFILES_LOG_DIR:-/tmp/hh-profiles}"
 mkdir -p "$LOG_DIR"

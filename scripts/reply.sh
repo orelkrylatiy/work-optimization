@@ -3,11 +3,11 @@
 # reply.sh — Ответы работодателям (итеративные AI-ответы)
 #
 # Использование:
-#   ./scripts/reply.sh [--dry-run] [--iterations N] [--chats N]
+#   ./scripts/reply.sh [--dry-run|--live] [--iterations N] [--chats N]
 #
 # Примеры:
-#   ./scripts/reply.sh --dry-run              # Пробный запуск
-#   ./scripts/reply.sh                        # Live запуск (6 итераций по 50 чатов)
+#   ./scripts/reply.sh                        # Пробный запуск (по умолчанию)
+#   ./scripts/reply.sh --live                 # Live запуск (6 итераций по 50 чатов)
 #   ./scripts/reply.sh --iterations 3         # 3 итерации
 #   ./scripts/reply.sh --chats 100            # 100 чатов за итерацию
 #
@@ -32,11 +32,26 @@ REPLY_PROMPT_TEMPLATE="${REPLY_PROMPT_TEMPLATE:-$PROJECT_ROOT/prompts/reply_empl
 # Мультиаккаунт: HH_PROFILE_ID берётся из окружения или --profile флага
 
 # Парсинг аргументов
-DRY_RUN=""
+RUN_MODE="dry-run"
+RUN_MODE_EXPLICIT=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)
-            DRY_RUN="--dry-run"
+            if [[ "$RUN_MODE_EXPLICIT" == "live" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="dry-run"
+            RUN_MODE_EXPLICIT="dry-run"
+            shift
+            ;;
+        --live)
+            if [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]]; then
+                echo "Нельзя использовать --dry-run и --live одновременно" >&2
+                exit 1
+            fi
+            RUN_MODE="live"
+            RUN_MODE_EXPLICIT="live"
             shift
             ;;
         --iterations)
@@ -57,10 +72,11 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Использование: $0 [--dry-run] [--iterations N] [--chats N] [--profile ID]"
+            echo "Использование: $0 [--dry-run|--live] [--iterations N] [--chats N] [--profile ID]"
             echo ""
             echo "Опции:"
-            echo "  --dry-run           Пробный запуск без отправки"
+            echo "  --dry-run           Пробный запуск без отправки (по умолчанию)"
+            echo "  --live              Разрешить реальную отправку сообщений"
             echo "  --iterations N      Максимум итераций (по умолчанию: 6)"
             echo "  --chats N           Чатов за итерацию (по умолчанию: 50)"
             echo "  --profile ID        Профиль аккаунта (или HH_PROFILE_ID=...)"
@@ -119,10 +135,10 @@ echo -e "${YELLOW}Telegram для связи:${NC} $TELEGRAM"
 echo -e "${YELLOW}Максимум итераций:${NC} $MAX_ITERATIONS"
 echo -e "${YELLOW}Чатов за итерацию:${NC} $CHATS_PER_ITERATION"
 echo -e "${YELLOW}Промпт ответов:${NC} $REPLY_PROMPT_TEMPLATE"
-if [[ -n "$DRY_RUN" ]]; then
+if [[ "$RUN_MODE" == "dry-run" ]]; then
     echo -e "${YELLOW}Режим:${NC} ${RED}DRY-RUN (без отправки)${NC}"
 else
-    echo -e "${YELLOW}Режим:${NC} ${GREEN}LIVE${NC}"
+    echo -e "${YELLOW}Режим:${NC} ${GREEN}LIVE (явно включён через --live)${NC}"
 fi
 echo ""
 
@@ -141,13 +157,19 @@ export REPLY_SYSTEM_PROMPT_FILE
 echo -e "${GREEN}🚀 Запуск итеративных ответов...${NC}"
 echo ""
 
-python3 "$SCRIPT_DIR/reply_iterative_ai.py" $DRY_RUN
+REPLY_MODE_ARGS=()
+if [[ "$RUN_MODE" == "live" ]]; then
+    REPLY_MODE_ARGS+=(--live)
+else
+    REPLY_MODE_ARGS+=(--dry-run)
+fi
+python3 "$SCRIPT_DIR/reply_iterative_ai.py" "${REPLY_MODE_ARGS[@]}"
 
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [[ -n "$DRY_RUN" ]]; then
+if [[ "$RUN_MODE" == "dry-run" ]]; then
     echo -e "${GREEN}✅ Dry-run завершён. Проверьте вывод выше.${NC}"
-    echo -e "${YELLOW}Для live запуска запустите: ${NC}./scripts/reply.sh"
+    echo -e "${YELLOW}Для live запуска запустите: ${NC}./scripts/reply.sh --live"
 else
     echo -e "${GREEN}✅ Ответы завершены!${NC}"
 fi

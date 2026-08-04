@@ -15,13 +15,13 @@ hh-applicant-tool list-resumes
 # Поднять резюме
 hh-applicant-tool boost-resume
 
-# Отклики с AI-письмами (dry-run → live)
-./scripts/apply.sh --dry-run
+# Отклики с AI-письмами: dry-run по умолчанию, live только явно
 ./scripts/apply.sh
+./scripts/apply.sh --live
 
-# Ответы работодателям (итеративно, AI, с учётом кто первый написал)
-./scripts/reply.sh --dry-run
+# Ответы работодателям: dry-run по умолчанию, live только явно
 ./scripts/reply.sh
+./scripts/reply.sh --live
 ```
 
 **3. Локальные переменные для персонализации:**
@@ -63,9 +63,28 @@ HH_TELEGRAM=@maxxwway
 ### Локально
 
 ```bash
-python -m venv venv
-. venv/bin/activate
-pip install '.[playwright]'
+# Python 3.11+
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[playwright,pillow]'
+# Required to run the FastAPI admin panel and its TestClient tests.
+python -m pip install -r admin/requirements.txt
+```
+
+Poetry users should install the same admin dependency set explicitly:
+
+```bash
+poetry install --with dev
+poetry run python -m pip install --no-cache-dir -r admin/requirements.txt
+```
+
+Run the regular offline test suite with `make dev && make test`. The configured
+AI-provider check is intentionally opt-in because it contacts local Ollama and
+the configured provider:
+
+```bash
+RUN_AI_INTEGRATION=1 poetry run pytest tests/test_ai_letter_integration.py -m integration -v
 ```
 
 ### Через Docker
@@ -104,7 +123,7 @@ account2
 ./scripts/all-profiles.sh reply
 ./scripts/all-profiles.sh apply
 ./scripts/all-profiles.sh daily
-./scripts/all-profiles.sh reply --dry-run
+./scripts/all-profiles.sh apply --live
 ```
 
 Без `.profiles` используется один основной профиль `default`. Логи пишутся в
@@ -203,7 +222,43 @@ CLI и админка используют один и тот же клиент 
 
 ## Web Admin / Agent Layer
 
-Админка запускается на `http://127.0.0.1:8000`.
+Start the admin panel locally on loopback only:
+
+```bash
+CONFIG_DIR="$PWD/config" python -m uvicorn admin.app:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000`. To require HTTP Basic authentication, set both
+credentials before starting it:
+
+```bash
+ADMIN_USERNAME=admin ADMIN_PASSWORD='use-a-long-random-password' \
+CONFIG_DIR="$PWD/config" python -m uvicorn admin.app:app --host 127.0.0.1 --port 8000
+```
+
+When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, every UI/API route
+except `/health` requires Basic Auth. When neither is set, the admin remains
+unauthenticated for deliberately local-only deployments. Do not bind an
+unauthenticated admin to a public interface. A configuration with only one of
+the two variables is rejected at startup/request time to prevent an accidental
+open deployment.
+
+Docker Compose does not publish port 8000 by default. If you deliberately
+expose the panel, use a loopback-only mapping and pass both credentials via a
+Compose override or service environment:
+
+```yaml
+services:
+  hh_applicant_tool:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+```
+
+The container can listen on `0.0.0.0` internally; the host-side loopback
+mapping is what prevents public exposure.
 
 Полезные endpoint’ы:
 
@@ -221,6 +276,20 @@ CLI и админка используют один и тот же клиент 
 - агент читает digest и review endpoint’ы;
 - агент помогает с выбором search-контуров, разбором логов и follow-up;
 - агент не должен бесконтрольно слать всё подряд.
+
+### Dry-run and live actions
+
+`--dry-run` is a read/preview mode for application and reply workflows. It may
+read HH data and generate a preview, but it must not send an HH write, employer
+email, or chat message, and it must not persist application/reply state.
+
+In the admin, live applications, resume updates, batch replies, rejection
+clearing, and message sends require an explicit confirmation. Live applications
+also require one selected resume; external employer email needs a separate
+confirmation. `apply.sh`, `reply.sh`, and `daily.sh` are dry-run by default.
+`daily.sh --full --live` performs a preview before the explicitly requested
+live workflow. Resume publishing through `all-profiles.sh boost|update` also
+requires `--live`; unattended publishing is disabled in the shipped schedules.
 
 ## Что Автоматизировать, А Что Нет
 

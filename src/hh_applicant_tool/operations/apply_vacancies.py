@@ -66,7 +66,7 @@ class Namespace(BaseNamespace):
     per_page: int
     total_pages: int
     excluded_filter: str | None
-    max_responses: int
+    max_responses: int | None
     send_email: bool
     skip_tests: bool
 
@@ -199,8 +199,8 @@ class Operation(
         )
         parser.add_argument(
             "--max-responses",
-            type=int,
-            help="Пропускать отклик на вакансии с более чем N откликов (не реализован)",
+            type=self._non_negative_int,
+            help="Максимальное число откликов за один запуск (0 — не отправлять)",
         )
         parser.add_argument(
             "--dry-run",
@@ -357,6 +357,26 @@ class Operation(
 
         return delay_min, delay_max
 
+    @staticmethod
+    def _non_negative_int(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as ex:
+            raise argparse.ArgumentTypeError(
+                "must be a non-negative integer"
+            ) from ex
+        if parsed < 0:
+            raise argparse.ArgumentTypeError(
+                "must be a non-negative integer"
+            )
+        return parsed
+
+    def _response_quota_reached(self) -> bool:
+        return (
+            self.max_responses is not None
+            and self.responses_sent >= self.max_responses
+        )
+
     def _assign_args(self, args: Namespace) -> None:
         for attr_name in self._ARG_ATTRS:
             setattr(self, attr_name, getattr(args, attr_name))
@@ -379,6 +399,9 @@ class Operation(
             else self.cover_letter
         )
         self._assign_args(args)
+        if self.max_responses is not None and self.max_responses < 0:
+            raise ValueError("max_responses must be a non-negative integer")
+        self.responses_sent = 0
         (
             self.response_delay_min,
             self.response_delay_max,
@@ -465,10 +488,11 @@ class Operation(
 
     def _apply_vacancies(self) -> None:
         resumes: list[datatypes.Resume] = self.tool.get_resumes()
-        try:
-            self.tool.storage.resumes.save_batch(resumes)
-        except RepositoryError as ex:
-            logger.exception(ex)
+        if not self.dry_run:
+            try:
+                self.tool.storage.resumes.save_batch(resumes)
+            except RepositoryError as ex:
+                logger.exception(ex)
         resumes = (
             list(filter(lambda x: x["id"] == self.resume_id, resumes))
             if self.resume_id
@@ -486,6 +510,12 @@ class Operation(
         seen_employers = set()
 
         for resume in resumes:
+            if self._response_quota_reached():
+                logger.info(
+                    "Reached application quota (%d); no more resumes will be processed",
+                    self.max_responses,
+                )
+                break
             self._apply_resume(
                 resume=resume,
                 user=me,
@@ -493,17 +523,24 @@ class Operation(
             )
 
         # Синхронизация откликов
-        for neg in self.tool.get_negotiations():
-            try:
-                # Пропускаем отклики с удаленными работодателями (employer_id = null)
-                vacancy = neg.get("vacancy")
-                if not vacancy or not vacancy.get("employer") or not vacancy["employer"].get("id"):
-                    logger.debug(
-                        "Пропуск отклика: вакансия или работодатель удален"
-                    )
-                    continue
-                self.tool.storage.negotiations.save(neg)
-            except RepositoryError as e:
-                logger.warning(e)
+        if self.dry_run:
+            logger.info("dry-run: negotiations were not synchronized to storage")
+        else:
+            for neg in self.tool.get_negotiations():
+                try:
+                    # Пропускаем отклики с удаленными работодателями (employer_id = null)
+                    vacancy = neg.get("vacancy")
+                    if (
+                        not vacancy
+                        or not vacancy.get("employer")
+                        or not vacancy["employer"].get("id")
+                    ):
+                        logger.debug(
+                            "Пропуск отклика: вакансия или работодатель удален"
+                        )
+                        continue
+                    self.tool.storage.negotiations.save(neg)
+                except RepositoryError as e:
+                    logger.warning(e)
 
         print("📝 Отклики на вакансии разосланы!")

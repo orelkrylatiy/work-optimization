@@ -9,6 +9,9 @@ scheduler.py — Планировщик для hh-applicant-tool
 Использование:
     python scheduler.py --time 09:00
     python scheduler.py --time 09:00 --apply-time 09:15
+
+By default the scheduler only runs an application dry-run.  Use ``--live`` to
+allow actual applications and resume publishing.
 """
 
 from __future__ import annotations
@@ -125,6 +128,11 @@ def main():
         help="Не запускать apply-vacancies",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Явно разрешить реальные отклики и публикацию резюме",
+    )
+    parser.add_argument(
         "--project-dir",
         type=Path,
         default=Path(__file__).parent.parent,
@@ -152,7 +160,8 @@ def main():
     project_dir = args.project_dir.resolve()
     hh_tool = [sys.executable, "-m", "hh_applicant_tool"]
 
-    # Команды
+    # Commands: application writes and resume publishing are deliberately
+    # opt-in.  A regular scheduled run remains useful as a local preview.
     boost_cmd = hh_tool + ["boost-resume"]
     apply_cmd = (
         hh_tool
@@ -172,6 +181,8 @@ def main():
             "3",
         ]
     )
+    if not args.live:
+        apply_cmd.append("--dry-run")
 
     # Создание директории для логов
     log_dir = project_dir / "logs"
@@ -186,20 +197,29 @@ def main():
         logger.info("🔄 Режим: один запуск (тест)")
     else:
         logger.info("🔄 Режим: постоянный (daemon)")
+    logger.info("🔒 Режим действий: %s", "LIVE (explicit --live)" if args.live else "DRY-RUN")
     logger.info("=" * 60)
 
     if args.once:
         # Тестовый запуск
         logger.info("\n🧪 ТЕСТОВЫЙ ЗАПУСК")
 
-        if not args.no_boost:
+        if not args.no_boost and args.live:
             run_command(boost_cmd, "boost-resume")
+        elif not args.no_boost:
+            logger.info("🧪 boost-resume skipped: resume publishing requires --live")
 
         if not args.no_apply:
             run_command(apply_cmd, "apply-vacancies")
 
         logger.info("\n✅ Тест завершён")
         return
+
+    # Calculate the next targets once, then advance them after each execution.
+    # Recalculating on every loop used to always return a future time and made
+    # the daemon silently never run.
+    next_boost = get_next_run_time(boost_hour, boost_minute)
+    next_apply = get_next_run_time(apply_hour, apply_minute)
 
     # Основной цикл
     logger.info("\n🕐 Ожидание заданного времени...")
@@ -208,21 +228,20 @@ def main():
         try:
             now = datetime.now()
 
-            # Проверка boost
-            if not args.no_boost:
-                boost_target = get_next_run_time(boost_hour, boost_minute)
-                if now >= boost_target:
+            # Resume publishing is an external write and needs explicit opt-in.
+            if not args.no_boost and args.live:
+                if now >= next_boost:
                     run_command(boost_cmd, "boost-resume")
-                    # Следующий запуск завтра
-                    boost_target = get_next_run_time(boost_hour, boost_minute)
+                    next_boost = get_next_run_time(boost_hour, boost_minute)
 
-            # Проверка apply
+            # Apply runs are previews until --live was deliberately selected.
             if not args.no_apply:
-                apply_target = get_next_run_time(apply_hour, apply_minute)
-                if now >= apply_target:
-                    run_command(apply_cmd, "apply-vacancies")
-                    # Следующий запуск завтра
-                    apply_target = get_next_run_time(apply_hour, apply_minute)
+                if now >= next_apply:
+                    run_command(
+                        apply_cmd,
+                        "apply-vacancies" if args.live else "apply-vacancies (dry-run)",
+                    )
+                    next_apply = get_next_run_time(apply_hour, apply_minute)
 
             # Проверка каждую минуту
             time.sleep(60)

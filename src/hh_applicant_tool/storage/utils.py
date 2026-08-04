@@ -11,13 +11,33 @@ MIGRATION_PATH: Path = QUERIES_PATH / "migrations"
 logger: logging.Logger = logging.getLogger(__package__)
 
 
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _apply_additive_schema_updates(conn: sqlite3.Connection) -> None:
+    """Upgrade pre-migration profile databases without dropping user data.
+
+    The project historically only replayed ``schema.sql``, which cannot add a
+    column to an already-created SQLite table. Keep additive upgrades here so
+    every profile is upgraded on its next normal storage initialization.
+    """
+    if "employer_id" not in _column_names(conn, "vacancies"):
+        conn.execute("ALTER TABLE vacancies ADD COLUMN employer_id INTEGER")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vacancies_employer_id "
+        "ON vacancies(employer_id)"
+    )
+
+
 def init_db(conn: sqlite3.Connection) -> None:
-    """Создает схему БД"""
+    """Create the schema and apply safe additive upgrades for existing profiles."""
     changes_before = conn.total_changes
 
     conn.executescript(
         (QUERIES_PATH / "schema.sql").read_text(encoding="utf-8")
     )
+    _apply_additive_schema_updates(conn)
 
     if conn.total_changes > changes_before:
         logger.info("Применена схема бд")

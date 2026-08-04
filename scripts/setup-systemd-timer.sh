@@ -31,6 +31,7 @@ HOME_DIR=$(eval echo ~$USER)
 
 # Время запуска (по умолчанию 9:00)
 RUN_TIME="${RUN_TIME:-09:00}"
+ENABLE_LIVE_RESUME_PUBLISHING="${ENABLE_LIVE_RESUME_PUBLISHING:-false}"
 
 echo "Директория проекта: $PROJECT_DIR"
 echo "Время запуска: $RUN_TIME"
@@ -54,7 +55,7 @@ After=network.target
 [Service]
 Type=oneshot
 WorkingDirectory=$PROJECT_DIR
-ExecStart=$HH_TOOL boost-resume
+ExecStart=/bin/bash $PROJECT_DIR/scripts/all-profiles.sh boost --live
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 StandardOutput=append:$PROJECT_DIR/logs/boost.log
 StandardError=append:$PROJECT_DIR/logs/boost.log
@@ -93,7 +94,7 @@ After=network.target hh-boost.service
 [Service]
 Type=oneshot
 WorkingDirectory=$PROJECT_DIR
-ExecStart=/bin/bash $PROJECT_DIR/scripts/apply.sh
+ExecStart=/bin/bash $PROJECT_DIR/scripts/apply.sh --dry-run
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 StandardOutput=append:$PROJECT_DIR/logs/apply.log
 StandardError=append:$PROJECT_DIR/logs/apply.log
@@ -134,10 +135,16 @@ fi
 
 # Перезагрузка daemon и активация
 systemctl --user daemon-reload
-systemctl --user enable hh-boost.timer
 systemctl --user enable hh-apply.timer
-systemctl --user start hh-boost.timer
 systemctl --user start hh-apply.timer
+
+if [[ "$ENABLE_LIVE_RESUME_PUBLISHING" == "true" ]]; then
+    systemctl --user enable hh-boost.timer
+    systemctl --user start hh-boost.timer
+    echo -e "${YELLOW}✓ Live resume-publishing timer explicitly enabled${NC}"
+else
+    echo -e "${YELLOW}⚠️  Live resume-publishing timer was not enabled. Set ENABLE_LIVE_RESUME_PUBLISHING=true to opt in.${NC}"
+fi
 
 echo
 echo -e "${GREEN}✓ Таймеры активированы!${NC}"

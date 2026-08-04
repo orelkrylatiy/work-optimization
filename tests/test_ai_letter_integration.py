@@ -1,74 +1,51 @@
-#!/usr/bin/env python3
+"""Opt-in integration check for the configured cover-letter provider.
+
+This test is deliberately disabled unless RUN_AI_INTEGRATION=1.  Importing
+the module and collecting the regular test suite must never contact a local
+Ollama server or the configured AI provider.
 """
-Тест: проверяем, что отправляется в LLM для генерации сопроводительного письма
-"""
-import sys
-sys.path.insert(0, '/Users/m.s.agafonov/Desktop/work-optimization/src')
 
-from hh_applicant_tool.main import HHApplicantTool
-from hh_applicant_tool.utils.misc import load_prompt
+from __future__ import annotations
 
-# Создаем инструмент
-tool = HHApplicantTool()
+import os
 
-# Загружаем системный промпт из файла
-system_prompt = load_prompt("prompts/cover_letter_frontend.txt")
-print("=" * 60)
-print("СИСТЕМНЫЙ ПРОМПТ:")
-print("=" * 60)
-print(system_prompt)
-print()
+import pytest
 
-# Инициализируем AI для cover letters
-cover_letter_ai = tool.get_cover_letter_ai(system_prompt)
 
-# Тестовые данные (как в реальной вакансии)
-message_prompt = load_prompt("Сгенерируй сопроводительное письмо не более 5-7 предложений от моего имени для вакансии")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.requires_network,
+    pytest.mark.skipif(
+        os.getenv("RUN_AI_INTEGRATION") != "1",
+        reason="set RUN_AI_INTEGRATION=1 to exercise the configured AI provider",
+    ),
+]
 
-vacancy_name = "Frontend-разработчик (React/TypeScript)"
-resume_title = "Frontend-разработчик (ReactJS, TypeScript, Redux)"
 
-# Формируем промпт точно так же, как в _build_cover_letter
-msg = message_prompt + "\n\n"
-msg += "Название вакансии: " + vacancy_name
-msg += "Мое резюме: " + resume_title
+def test_configured_cover_letter_provider_generates_a_response():
+    """Validate the manually configured provider only in an opt-in run."""
+    import requests
 
-print("=" * 60)
-print("ЗАПРОС К LLM (то, что отправляется):")
-print("=" * 60)
-print(msg)
-print()
+    from hh_applicant_tool.main import HHApplicantTool
+    from hh_applicant_tool.utils.misc import load_prompt
 
-# Проверяем, запущена ли Ollama
-import requests
-try:
-    response = requests.get("http://localhost:11434/api/tags", timeout=5)
-    models = response.json().get("models", [])
-    print("=" * 60)
-    print("МОДЕЛИ OLLAMA:")
-    print("=" * 60)
-    for m in models:
-        print(f"  - {m['name']}")
-    print()
-except requests.exceptions.ConnectionError:
-    print("⚠️  OLLAMA НЕ ЗАПУЩЕНА!")
-    print("   Запусти: ollama serve")
-    print()
-    sys.exit(1)
+    ollama_response = requests.get("http://127.0.0.1:11434/api/tags", timeout=5)
+    ollama_response.raise_for_status()
+    assert ollama_response.json().get("models"), "Ollama has no installed models"
 
-# Генерируем ответ
-print("=" * 60)
-print("ОТВЕТ ОТ LLM (сопроводительное письмо):")
-print("=" * 60)
-try:
-    ai_answer = cover_letter_ai.complete(msg).strip()
-    print(ai_answer)
-    print()
-    print("✅ AI работает корректно!")
-except Exception as e:
-    print(f"❌ Ошибка AI: {e}")
-    print()
-    print("Возможные причины:")
-    print("  1. Модель не загружена (запусти: ollama pull qwen2.5:3b)")
-    print("  2. Неправильное имя модели в конфиге")
-    print("  3. Ollama не отвечает")
+    tool = HHApplicantTool()
+    system_prompt = load_prompt("prompts/cover_letter_frontend.txt")
+    message_prompt = load_prompt(
+        "Сгенерируй сопроводительное письмо не более 5-7 предложений от моего имени для вакансии"
+    )
+    prompt = "\n\n".join(
+        [
+            message_prompt,
+            "Название вакансии: Frontend-разработчик (React/TypeScript)",
+            "Мое резюме: Frontend-разработчик (ReactJS, TypeScript, Redux)",
+        ]
+    )
+
+    answer = tool.get_cover_letter_ai(system_prompt).complete(prompt).strip()
+
+    assert answer, "The configured cover-letter provider returned an empty response"

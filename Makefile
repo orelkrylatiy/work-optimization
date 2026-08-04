@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint format typecheck docker-build docker-run docker-stop docker-logs clean
+.PHONY: help install dev admin-deps test lint format typecheck docker-build docker-run docker-stop docker-logs clean
 
 help:
 	@echo "HH Applicant Tool - Development Commands"
@@ -6,6 +6,7 @@ help:
 	@echo "Setup & Installation:"
 	@echo "  make install          - Install dependencies with poetry"
 	@echo "  make dev              - Install dev dependencies"
+	@echo "  make admin-deps       - Install admin runtime/test dependencies"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint             - Run ruff, isort, pylint checks"
@@ -34,10 +35,15 @@ help:
 
 install:
 	poetry install
+	$(MAKE) admin-deps
 
 dev:
 	poetry install --with dev
+	$(MAKE) admin-deps
 	poetry run pre-commit install
+
+admin-deps:
+	poetry run python -m pip install --no-cache-dir -r admin/requirements.txt
 
 test:
 	poetry run pytest tests/ -v
@@ -145,4 +151,4 @@ unschedule:
 	@(crontab -l 2>/dev/null | grep -v "hh-applicant-tool" | grep -v "boost-resume" | grep -v "apply-vacancies") | crontab -
 	@echo "✅ Cron jobs removed"
 
-.PHONY: help install dev test lint format typecheck docker-build docker-run docker-stop docker-logs clean setup-config docker-test docker-shell ci test-cov schedule schedule-time scheduler scheduler-test scheduler-background unschedule
+.PHONY: help install dev admin-deps test lint format typecheck docker-build docker-run docker-stop docker-logs clean setup-config docker-test docker-shell ci test-cov schedule schedule-time scheduler scheduler-test scheduler-background unschedule

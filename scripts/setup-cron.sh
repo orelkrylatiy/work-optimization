@@ -54,15 +54,24 @@ REPLY_MIN=$((REPLY_TOTAL_MINUTES % 60))
 echo -e "${YELLOW}Время запуска: $RUN_TIME (локальное время сервера)${NC}"
 echo
 
-# Создание crontab
-CRON_JOB="$RUN_MIN $RUN_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh boost >> $PROJECT_DIR/logs/boost.log 2>&1"
-CRON_JOB2="$APPLY_MIN $APPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh apply >> $PROJECT_DIR/logs/apply.log 2>&1"
-CRON_JOB3="$REPLY_MIN $REPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh reply >> $PROJECT_DIR/logs/reply.log 2>&1"
+# Создание crontab. Публикация резюме — необратимое внешнее действие, поэтому
+# расписание для неё создаётся только явным opt-in через переменную окружения.
+ENABLE_LIVE_RESUME_PUBLISHING="${ENABLE_LIVE_RESUME_PUBLISHING:-false}"
+CRON_JOB=""
+if [[ "$ENABLE_LIVE_RESUME_PUBLISHING" == "true" ]]; then
+    CRON_JOB="$RUN_MIN $RUN_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh boost --live >> $PROJECT_DIR/logs/boost.log 2>&1"
+fi
+CRON_JOB2="$APPLY_MIN $APPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh apply --dry-run >> $PROJECT_DIR/logs/apply.log 2>&1"
+CRON_JOB3="$REPLY_MIN $REPLY_HOUR * * * cd $PROJECT_DIR && /bin/bash $PROJECT_DIR/scripts/all-profiles.sh reply --dry-run >> $PROJECT_DIR/logs/reply.log 2>&1"
 
 echo -e "${YELLOW}Добавляем задачи в cron:${NC}"
-echo "1. Поднятие резюме: $CRON_JOB"
-echo "2. Отклики: $CRON_JOB2"
-echo "3. Ответы: $CRON_JOB3"
+if [[ -n "$CRON_JOB" ]]; then
+    echo "1. Поднятие резюме (live): $CRON_JOB"
+else
+    echo "1. Поднятие резюме: отключено (set ENABLE_LIVE_RESUME_PUBLISHING=true to opt in)"
+fi
+echo "2. Отклики (dry-run): $CRON_JOB2"
+echo "3. Ответы (dry-run): $CRON_JOB3"
 echo
 
 # Подтверждение
@@ -77,7 +86,12 @@ fi
 mkdir -p "$PROJECT_DIR/logs"
 
 # Добавление в crontab
-(crontab -l 2>/dev/null | grep -v "$PROJECT_DIR" || true; echo "$CRON_JOB"; echo "$CRON_JOB2"; echo "$CRON_JOB3") | crontab -
+(
+    crontab -l 2>/dev/null | grep -v "$PROJECT_DIR" || true
+    [[ -n "$CRON_JOB" ]] && echo "$CRON_JOB"
+    echo "$CRON_JOB2"
+    echo "$CRON_JOB3"
+) | crontab -
 
 echo -e "${GREEN}✓ Cron настроен успешно!${NC}"
 echo

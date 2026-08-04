@@ -8,20 +8,25 @@ FastAPI backend
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import platform
 import re
+import secrets
+import signal
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from collections import Counter, defaultdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -35,11 +40,56 @@ from hh_applicant_tool.utils.date import parse_api_datetime
 app = FastAPI(title="HH Admin Panel", version="1.0.0")
 
 # Отслеживание запущенных операций
-running_operations = {}
+running_operations: dict[str, dict[str, Any]] = {}
+active_operations: dict[tuple[str, str], str] = {}
 operations_lock = threading.Lock()
+operation_history_lock = threading.Lock()
 
 # Устанавливаем UTF-8 для всех JSON ответов
 app.default_response_class = JSONResponse
+
+
+def _admin_credentials() -> tuple[str, str] | None:
+    """Return optional Basic Auth credentials configured for the local admin."""
+    username = os.getenv("ADMIN_USERNAME", "")
+    password = os.getenv("ADMIN_PASSWORD", "")
+    if bool(username) != bool(password):
+        # A half-configured access boundary must not silently leave the panel open.
+        raise RuntimeError(
+            "Set both ADMIN_USERNAME and ADMIN_PASSWORD, or leave both unset."
+        )
+    return (username, password) if username else None
+
+
+def _is_authorized(request: Request, credentials: tuple[str, str]) -> bool:
+    """Validate a Basic Auth header without logging or reflecting its value."""
+    authorization = request.headers.get("authorization", "")
+    scheme, _, encoded = authorization.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return False
+    username, separator, password = decoded.partition(":")
+    return bool(separator) and secrets.compare_digest(username, credentials[0]) and secrets.compare_digest(password, credentials[1])
+
+
+@app.middleware("http")
+async def require_admin_auth(request: Request, call_next):
+    """Protect UI and API when credentials are configured; keep health probes open."""
+    if request.url.path != "/health":
+        try:
+            credentials = _admin_credentials()
+        except RuntimeError as ex:
+            return JSONResponse({"detail": str(ex)}, status_code=500)
+        if credentials and not _is_authorized(request, credentials):
+            return JSONResponse(
+                {"detail": "Admin authentication required"},
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="HH Admin"'},
+            )
+    return await call_next(request)
 
 # Middleware для явного указания UTF-8 кодировки
 @app.middleware("http")
@@ -49,12 +99,18 @@ async def add_utf8_header(request, call_next):
         response.headers["content-type"] = response.headers["content-type"].replace("charset=", "").split(";")[0] + "; charset=utf-8"
     return response
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv("ADMIN_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers: paths
@@ -193,12 +249,76 @@ def get_profiles() -> list[str]:
     return profiles
 
 
+def _validate_scope(scope: str) -> str:
+    normalized = (scope or "profile").strip().lower()
+    if normalized not in {"profile", "all"}:
+        raise HTTPException(400, "Scope must be either 'profile' or 'all'.")
+    return normalized
+
+
+def _profiles_for_scope(profile: str, scope: str) -> tuple[str, list[str]]:
+    """Resolve an explicit profile or the read-only aggregate account scope."""
+    normalized_profile = _validate_profile_name(profile)
+    normalized_scope = _validate_scope(scope)
+    if normalized_scope == "all":
+        return normalized_scope, get_profiles()
+    return normalized_scope, [normalized_profile]
+
+
+def _snapshot_updated_at(profile: str) -> str | None:
+    """Local SQLite snapshot freshness, deliberately not an HH source timestamp."""
+    db_path = _db_path(profile)
+    if not db_path.exists():
+        return None
+    return datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _profile_account_summary(profile: str) -> dict[str, Any]:
+    """Return local, non-secret account metadata without making an HH API request."""
+    profile = _validate_profile_name(profile)
+    config_path = _config_path(profile)
+    db_path = _db_path(profile)
+    return {
+        "profile": profile,
+        "has_config": config_path.exists(),
+        "has_db": db_path.exists(),
+        "ready": config_path.exists() and db_path.exists(),
+        "token": _get_token_info(profile) if config_path.exists() else {"status": "no_config", "profile": profile},
+        "snapshot_updated_at": _snapshot_updated_at(profile),
+    }
+
+
+def _iter_profile_connections(
+    profile: str,
+    scope: str,
+) -> tuple[str, list[tuple[str, sqlite3.Connection]], list[dict[str, str]]]:
+    """Open only existing profile snapshots and make omissions visible to callers."""
+    normalized_scope, profiles = _profiles_for_scope(profile, scope)
+    connections: list[tuple[str, sqlite3.Connection]] = []
+    unavailable: list[dict[str, str]] = []
+    for account_profile in profiles:
+        if not _db_path(account_profile).exists():
+            unavailable.append({"profile": account_profile, "reason": "database_missing"})
+            continue
+        try:
+            connections.append((account_profile, get_conn(account_profile)))
+        except HTTPException as ex:
+            unavailable.append({"profile": account_profile, "reason": str(ex.detail)})
+    if normalized_scope == "profile" and not connections:
+        raise HTTPException(404, f"Database not found for profile: {profile}")
+    return normalized_scope, connections, unavailable
+
+
 def get_conn(profile: str = "default") -> sqlite3.Connection:
     db = _db_path(profile)
     if not db.exists():
         raise HTTPException(404, f"База данных не найдена: {db}")
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
+    # Existing profile snapshots are upgraded before dashboard queries use the
+    # newly persisted vacancy→employer relation.
+    init_db(conn)
+    conn.commit()
     return conn
 
 
@@ -336,25 +456,38 @@ def health_check():
 
 
 @app.get("/api/status")
-def get_status():
-    """Проверка состояния: есть ли конфиг и БД."""
-    profiles = get_profiles()
-    config_root = _config_root()
-    status = {
-        "config_root": str(config_root),
+def get_status(
+    profile: str = Query(constants.ADMIN_DEFAULT_PROFILE),
+    scope: str = Query("profile"),
+):
+    """Return readiness for the selected profile or an explicit aggregate scope."""
+    normalized_scope, profiles = _profiles_for_scope(profile, scope)
+    accounts = [_profile_account_summary(item) for item in profiles]
+    selected = (
+        next((item for item in accounts if item["profile"] == profile), None)
+        if normalized_scope == "profile"
+        else None
+    )
+    if normalized_scope == "profile" and selected is None:
+        selected = {
+            "profile": _validate_profile_name(profile),
+            "has_config": False,
+            "has_db": False,
+            "ready": False,
+            "token": {"status": "no_config", "profile": profile},
+            "snapshot_updated_at": None,
+        }
+    ready_accounts = [item for item in accounts if item["ready"]]
+    return {
+        "config_root": str(_config_root()),
+        "scope": normalized_scope,
         "profiles": profiles,
-        "ready": False,
-        "has_config": False,
-        "has_db": False,
+        "accounts": accounts,
+        "ready": selected["ready"] if selected else bool(ready_accounts),
+        "has_config": selected["has_config"] if selected else bool(ready_accounts),
+        "has_db": selected["has_db"] if selected else bool(ready_accounts),
+        "selected_profile": selected["profile"] if selected else None,
     }
-    if profiles:
-        profile = profiles[0]
-        cfg = _config_path(profile)
-        db = _db_path(profile)
-        status["has_config"] = cfg.exists()
-        status["has_db"] = db.exists()
-        status["ready"] = cfg.exists() and db.exists()
-    return status
 
 
 @app.get("/api/constants")
@@ -404,7 +537,18 @@ def index():
 
 @app.get("/api/profiles")
 def list_profiles():
-    return {"profiles": get_profiles()}
+    profiles = get_profiles()
+    return {
+        "profiles": profiles,
+        "accounts": [_profile_account_summary(profile) for profile in profiles],
+    }
+
+
+@app.get("/api/accounts")
+def list_accounts():
+    """Account overview for the visible account switcher and aggregate dashboard."""
+    profiles = get_profiles()
+    return {"accounts": [_profile_account_summary(profile) for profile in profiles]}
 
 
 class ProfileCreateRequest(BaseModel):
@@ -473,64 +617,131 @@ def get_whoami(profile: str = Query("default")):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats")
-def get_stats(profile: str = Query("default")):
-    conn = get_conn(profile)
+def get_stats(
+    profile: str = Query("default"),
+    scope: str = Query("profile"),
+):
+    """Aggregate dashboard metrics from explicitly scoped local SQLite snapshots.
+
+    ``scope=all`` is intentionally a local aggregate. It never fans out to HH
+    while rendering the dashboard, so each metric can state its snapshot
+    freshness and stay usable when one account is temporarily unavailable.
+    """
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    totals: Counter[str] = Counter()
+    states: Counter[str] = Counter()
+    daily_counts: Counter[str] = Counter()
+    skip_reasons: Counter[str] = Counter()
+    recent_negotiations: list[dict[str, Any]] = []
+    resume_views: list[dict[str, Any]] = []
+    profile_totals: list[dict[str, Any]] = []
+    day_keys = [(date.today() - timedelta(days=offset)).isoformat() for offset in range(13, -1, -1)]
+
     try:
-        # Общее кол-во по таблицам
-        neg_total = q1(conn, "SELECT count(*) as c FROM negotiations")["c"]
-        vac_total = q1(conn, "SELECT count(*) as c FROM vacancies")["c"]
-        emp_total = q1(conn, "SELECT count(*) as c FROM employers")["c"]
-        skipped_total = q1(conn, "SELECT count(*) as c FROM skipped_vacancies")["c"]
-        resume_total = q1(conn, "SELECT count(*) as c FROM resumes")["c"]
+        for account_profile, conn in connections:
+            account_totals = {
+                "profile": account_profile,
+                "negotiations": 0,
+                "vacancies": 0,
+                "employers": 0,
+                "skipped": 0,
+                "resumes": 0,
+                "snapshot_updated_at": _snapshot_updated_at(account_profile),
+            }
+            for table, key in (
+                ("negotiations", "negotiations"),
+                ("vacancies", "vacancies"),
+                ("employers", "employers"),
+                ("skipped_vacancies", "skipped"),
+                ("resumes", "resumes"),
+            ):
+                count = (q1(conn, f"SELECT count(*) AS c FROM {table}") or {}).get("c", 0)
+                account_totals[key] = count
+                totals[key] += count
 
-        # Отклики по состоянию
-        states = q(conn, "SELECT state, count(*) as cnt FROM negotiations GROUP BY state ORDER BY cnt DESC")
+            for row in q(conn, "SELECT state, count(*) AS cnt FROM negotiations GROUP BY state"):
+                states[row["state"] or "unknown"] += row["cnt"]
+            for row in q(
+                conn,
+                """
+                SELECT date(created_at) AS day, count(*) AS cnt
+                FROM negotiations
+                WHERE date(created_at) >= date('now', '-13 days')
+                GROUP BY date(created_at)
+                """,
+            ):
+                if row["day"] in day_keys:
+                    daily_counts[row["day"]] += row["cnt"]
+            for row in q(
+                conn,
+                "SELECT reason, count(*) AS cnt FROM skipped_vacancies GROUP BY reason",
+            ):
+                skip_reasons[row["reason"] or "unknown"] += row["cnt"]
 
-        # Отклики по дням (последние 14 дней)
-        daily = q(conn, """
-            SELECT date(created_at) as day, count(*) as cnt
-            FROM negotiations
-            WHERE created_at >= date('now', '-14 days')
-            GROUP BY day ORDER BY day
-        """)
+            for row in q(
+                conn,
+                """
+                SELECT n.id, n.state, n.resume_id, n.created_at, n.updated_at,
+                       v.name AS vacancy_name, v.alternate_url AS vacancy_url,
+                       e.name AS employer_name
+                FROM negotiations n
+                LEFT JOIN vacancies v ON v.id = n.vacancy_id
+                LEFT JOIN employers e ON e.id = n.employer_id
+                ORDER BY n.created_at DESC
+                LIMIT 10
+                """,
+            ):
+                recent_negotiations.append({"profile": account_profile, **row})
 
-        # Топ-5 причин пропуска вакансий
-        skip_reasons = q(conn, """
-            SELECT reason, count(*) as cnt
-            FROM skipped_vacancies
-            GROUP BY reason ORDER BY cnt DESC LIMIT 5
-        """)
-
-        # Последние 5 откликов
-        recent_neg = q(conn, """
-            SELECT n.id, n.state, n.created_at,
-                   v.name as vacancy_name, v.alternate_url,
-                   e.name as employer_name
-            FROM negotiations n
-            LEFT JOIN vacancies v ON v.id = n.vacancy_id
-            LEFT JOIN employers e ON e.id = n.employer_id
-            ORDER BY n.created_at DESC LIMIT 5
-        """)
-
-        # Статистика просмотров резюме
-        resume_views = q(conn, "SELECT title, total_views, new_views FROM resumes")
-
-        return {
-            "totals": {
-                "negotiations": neg_total,
-                "vacancies": vac_total,
-                "employers": emp_total,
-                "skipped": skipped_total,
-                "resumes": resume_total,
-            },
-            "negotiations_by_state": states,
-            "daily_applications": daily,
-            "skip_reasons": skip_reasons,
-            "recent_negotiations": recent_neg,
-            "resume_views": resume_views,
-        }
+            for row in q(
+                conn,
+                """
+                SELECT id, title, url, alternate_url, status_id, status_name,
+                       can_publish_or_update, total_views, new_views, created_at, updated_at
+                FROM resumes
+                ORDER BY updated_at DESC
+                """,
+            ):
+                resume_views.append({"profile": account_profile, **row})
+            profile_totals.append(account_totals)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+
+    recent_negotiations.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    resume_views.sort(
+        key=lambda item: (item.get("profile") or "", item.get("title") or ""),
+    )
+    snapshots = [item["snapshot_updated_at"] for item in profile_totals if item["snapshot_updated_at"]]
+    return {
+        "scope": normalized_scope,
+        "profile": _validate_profile_name(profile),
+        "profiles": [account_profile for account_profile, _ in connections],
+        "unavailable_profiles": unavailable,
+        "snapshot_updated_at": max(snapshots) if snapshots else None,
+        "totals": {
+            "negotiations": totals["negotiations"],
+            "vacancies": totals["vacancies"],
+            "employers": totals["employers"],
+            "skipped": totals["skipped"],
+            "resumes": totals["resumes"],
+        },
+        "profile_totals": profile_totals,
+        "negotiations_by_state": [
+            {"state": state, "cnt": count}
+            for state, count in states.most_common()
+        ],
+        "daily_applications": [
+            {"day": day, "cnt": daily_counts[day]}
+            for day in day_keys
+        ],
+        "skip_reasons": [
+            {"reason": reason, "cnt": count}
+            for reason, count in skip_reasons.most_common(5)
+        ],
+        "recent_negotiations": recent_negotiations[:5],
+        "resume_views": resume_views,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -540,35 +751,38 @@ def get_stats(profile: str = Query("default")):
 @app.get("/api/negotiations")
 def list_negotiations(
     profile: str = Query("default"),
+    scope: str = Query("profile"),
     state: str | None = Query(None),
-    limit: int = Query(50),
-    offset: int = Query(0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
-    conn = get_conn(profile)
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    items: list[dict[str, Any]] = []
     try:
-        where, where_params = _build_optional_filter("n.state", state)
-        params = list(where_params)
-        params += [limit, offset]
-        rows = q(conn, """
-            SELECT n.id, n.state, n.chat_id, n.created_at, n.updated_at,
-                   v.name as vacancy_name, v.alternate_url as vacancy_url,
-                   v.salary_from, v.salary_to, v.currency,
-                   e.name as employer_name
-            FROM negotiations n
-            LEFT JOIN vacancies v ON v.id = n.vacancy_id
-            LEFT JOIN employers e ON e.id = n.employer_id
-        """ + where + """
-            ORDER BY n.created_at DESC
-            LIMIT ? OFFSET ?
-        """, params)
-        total = q1(
-            conn,
-            "SELECT count(*) as c FROM negotiations n " + where,
-            where_params,
-        )["c"]
-        return {"items": rows, "total": total}
+        for account_profile, conn in connections:
+            where, where_params = _build_optional_filter("n.state", state)
+            rows = q(conn, """
+                SELECT n.id, n.state, n.chat_id, n.resume_id, n.created_at, n.updated_at,
+                       v.name as vacancy_name, v.alternate_url as vacancy_url,
+                       v.salary_from, v.salary_to, v.currency,
+                       e.name as employer_name
+                FROM negotiations n
+                LEFT JOIN vacancies v ON v.id = n.vacancy_id
+                LEFT JOIN employers e ON e.id = n.employer_id
+            """ + where + """
+                ORDER BY n.created_at DESC
+            """, where_params)
+            items.extend({"profile": account_profile, **row} for row in rows)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return {
+        "scope": normalized_scope,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "unavailable_profiles": unavailable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -578,33 +792,37 @@ def list_negotiations(
 @app.get("/api/vacancies")
 def list_vacancies(
     profile: str = Query("default"),
+    scope: str = Query("profile"),
     search: str = Query(""),
-    limit: int = Query(50),
-    offset: int = Query(0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
-    conn = get_conn(profile)
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    items: list[dict[str, Any]] = []
     try:
-        where, where_params = _build_optional_filter("v.name", search, like=True)
-        params = list(where_params)
-        params += [limit, offset]
-        rows = q(conn, """
-            SELECT v.*, e.name as employer_name
-            FROM vacancies v
-            LEFT JOIN employers e ON e.id = (
-                SELECT employer_id FROM negotiations WHERE vacancy_id = v.id LIMIT 1
-            )
-        """ + where + """
-            ORDER BY v.created_at DESC
-            LIMIT ? OFFSET ?
-        """, params)
-        total = q1(
-            conn,
-            "SELECT count(*) as c FROM vacancies v " + where,
-            where_params,
-        )["c"]
-        return {"items": rows, "total": total}
+        for account_profile, conn in connections:
+            where, where_params = _build_optional_filter("v.name", search, like=True)
+            rows = q(conn, """
+                SELECT v.*, e.name AS employer_name
+                FROM vacancies v
+                LEFT JOIN employers e ON e.id = COALESCE(
+                    v.employer_id,
+                    (SELECT n.employer_id FROM negotiations n WHERE n.vacancy_id = v.id LIMIT 1)
+                )
+            """ + where + """
+                ORDER BY v.created_at DESC
+            """, where_params)
+            items.extend({"profile": account_profile, **row} for row in rows)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return {
+        "scope": normalized_scope,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "unavailable_profiles": unavailable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -614,29 +832,32 @@ def list_vacancies(
 @app.get("/api/skipped")
 def list_skipped(
     profile: str = Query("default"),
+    scope: str = Query("profile"),
     reason: str | None = Query(None),
-    limit: int = Query(50),
-    offset: int = Query(0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
-    conn = get_conn(profile)
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    items: list[dict[str, Any]] = []
     try:
-        where, where_params = _build_optional_filter("reason", reason)
-        params = list(where_params)
-        params += [limit, offset]
-        rows = q(conn, """
-            SELECT * FROM skipped_vacancies
-        """ + where + """
-            ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
-        """, params)
-        total = q1(
-            conn,
-            "SELECT count(*) as c FROM skipped_vacancies " + where,
-            where_params,
-        )["c"]
-        return {"items": rows, "total": total}
+        for account_profile, conn in connections:
+            where, where_params = _build_optional_filter("reason", reason)
+            rows = q(conn, """
+                SELECT * FROM skipped_vacancies
+            """ + where + """
+                ORDER BY created_at DESC
+            """, where_params)
+            items.extend({"profile": account_profile, **row} for row in rows)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return {
+        "scope": normalized_scope,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "unavailable_profiles": unavailable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -646,31 +867,37 @@ def list_skipped(
 @app.get("/api/employers")
 def list_employers(
     profile: str = Query("default"),
+    scope: str = Query("profile"),
     search: str = Query(""),
-    limit: int = Query(50),
-    offset: int = Query(0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
-    conn = get_conn(profile)
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    items: list[dict[str, Any]] = []
     try:
-        where, where_params = _build_optional_filter("e.name", search, like=True)
-        params = list(where_params)
-        params += [limit, offset]
-        rows = q(conn, """
-            SELECT e.*,
-                   (SELECT count(*) FROM negotiations n WHERE n.employer_id = e.id) as applications_count
-            FROM employers e
-        """ + where + """
-            ORDER BY applications_count DESC, e.created_at DESC
-            LIMIT ? OFFSET ?
-        """, params)
-        total = q1(
-            conn,
-            "SELECT count(*) as c FROM employers e " + where,
-            where_params,
-        )["c"]
-        return {"items": rows, "total": total}
+        for account_profile, conn in connections:
+            where, where_params = _build_optional_filter("e.name", search, like=True)
+            rows = q(conn, """
+                SELECT e.*,
+                       (SELECT count(*) FROM negotiations n WHERE n.employer_id = e.id) AS applications_count
+                FROM employers e
+            """ + where + """
+                ORDER BY applications_count DESC, e.created_at DESC
+            """, where_params)
+            items.extend({"profile": account_profile, **row} for row in rows)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+    items.sort(
+        key=lambda item: (item.get("applications_count") or 0, item.get("created_at") or ""),
+        reverse=True,
+    )
+    return {
+        "scope": normalized_scope,
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "unavailable_profiles": unavailable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -678,12 +905,34 @@ def list_employers(
 # ---------------------------------------------------------------------------
 
 @app.get("/api/resumes")
-def list_resumes(profile: str = Query("default")):
-    conn = get_conn(profile)
+def list_resumes(
+    profile: str = Query("default"),
+    scope: str = Query("profile"),
+):
+    normalized_scope, connections, unavailable = _iter_profile_connections(profile, scope)
+    items: list[dict[str, Any]] = []
     try:
-        return {"items": q(conn, "SELECT * FROM resumes ORDER BY updated_at DESC")}
+        for account_profile, conn in connections:
+            rows = q(
+                conn,
+                """
+                SELECT id, title, url, alternate_url, status_id, status_name,
+                       can_publish_or_update, total_views, new_views, created_at, updated_at
+                FROM resumes
+                ORDER BY updated_at DESC
+                """,
+            )
+            items.extend({"profile": account_profile, **row} for row in rows)
     finally:
-        conn.close()
+        for _, conn in connections:
+            conn.close()
+    items.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    return {
+        "scope": normalized_scope,
+        "items": items,
+        "total": len(items),
+        "unavailable_profiles": unavailable,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +953,12 @@ def _mask_config(obj: Any, depth: int = 0) -> Any:
 
 @app.get("/api/config")
 def get_config(profile: str = Query("default"), show_secrets: bool = Query(False)):
+    if show_secrets:
+        raise HTTPException(
+            403,
+            "Secrets are never returned by the admin API. Edit them directly in the profile config.",
+        )
+    profile = _validate_profile_name(profile)
     cfg_path = _config_path(profile)
     if not cfg_path.exists():
         raise HTTPException(404, "config.json не найден")
@@ -711,9 +966,7 @@ def get_config(profile: str = Query("default"), show_secrets: bool = Query(False
         data = _load_and_validate_config(cfg_path)
     except ValidationError as ex:
         raise HTTPException(400, f"Некорректный config.json: {ex}") from ex
-    if not show_secrets:
-        data = _mask_config(data)
-    return data
+    return _mask_config(data)
 
 
 class ConfigUpdate(BaseModel):
@@ -790,6 +1043,7 @@ def _load_and_validate_config(cfg_path: Path) -> dict[str, Any]:
 
 @app.put("/api/config")
 def update_config(body: ConfigUpdate, profile: str = Query("default")):
+    profile = _validate_profile_name(profile)
     cfg_path = _config_path(profile)
     if not cfg_path.exists():
         raise HTTPException(404, "config.json не найден")
@@ -1083,6 +1337,7 @@ def generate_letter(body: LetterRequest):
 class RunRequest(BaseModel):
     profile: str = "default"
     dry_run: bool = False
+    confirm_live: bool = False
     extra_args: list[str] = Field(default_factory=list)
     response_delay: str = f"{constants.RESPONSE_DELAY_MIN}-{constants.RESPONSE_DELAY_MAX}"
 
@@ -1102,19 +1357,135 @@ def run_apply_vacancies(body: RunRequest):
     return _run_operation("apply-vacancies", body, extra=args)
 
 
+def _requires_live_confirmation(op: str, cli_args: list[str]) -> bool:
+    if op == "update-resumes":
+        return True
+    return op in {"apply-vacancies", "reply-employers"} and "--dry-run" not in cli_args
+
+
+def _operation_key(profile: str, op: str) -> tuple[str, str]:
+    return profile, op
+
+
+def _operation_history_path(profile: str) -> Path:
+    return _profile_dir(profile) / "admin_operation_history.jsonl"
+
+
+def _operation_history_item(record: dict[str, Any]) -> dict[str, Any]:
+    """Persist auditable metadata only; verbose subprocess output stays ephemeral."""
+    keys = (
+        "op_id",
+        "operation",
+        "profile",
+        "dry_run",
+        "started_at",
+        "finished_at",
+        "returncode",
+        "cancelled",
+        "error",
+    )
+    return {key: record[key] for key in keys if key in record}
+
+
+def _append_operation_history(record: dict[str, Any]) -> None:
+    try:
+        path = _operation_history_path(record["profile"])
+        if not path.parent.exists():
+            return
+        with operation_history_lock, open(path, "a", encoding="utf-8") as history:
+            history.write(json.dumps(_operation_history_item(record), ensure_ascii=False) + "\n")
+    except OSError:
+        # An operation must never be reported as failed only because its optional
+        # local audit record could not be written.
+        pass
+
+
+def _finalize_operation(
+    op_id: str,
+    operation_key: tuple[str, str],
+    outcome: dict[str, Any],
+) -> None:
+    """Finish an operation once and persist one concise audit record.
+
+    The worker thread and a cancellation request can reach completion at nearly
+    the same time.  Reserving finalization under the operation lock keeps the
+    visible state and the JSONL history consistent without holding the lock for
+    file I/O.
+    """
+    history_record: dict[str, Any] | None = None
+    with operations_lock:
+        record = running_operations.get(op_id)
+        if not record or record.get("_finalized"):
+            return
+        record.update(
+            {
+                "completed": True,
+                "running": False,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "process": None,
+            }
+        )
+        record.update(outcome)
+        record["_finalized"] = True
+        active_operations.pop(operation_key, None)
+        history_record = dict(record)
+    _append_operation_history(history_record)
+
+
+def _terminate_operation_process(process: subprocess.Popen) -> None:
+    """Terminate a child process and any commands it spawned."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except (AttributeError, OSError):
+        process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, OSError):
+            process.kill()
+        process.wait()
+
+
 def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) -> dict:
     import uuid
 
     profile = _validate_profile_name(body.profile)
     extra = extra or []
+    all_args = [*extra, *body.extra_args]
+    if _requires_live_confirmation(op, all_args) and not body.confirm_live:
+        raise HTTPException(
+            409,
+            "Live operation requires an explicit confirm_live=true acknowledgement.",
+        )
 
     # Генерируем уникальный ID для операции
     op_id = str(uuid.uuid4())[:8]
+    operation_key = _operation_key(profile, op)
+
+    with operations_lock:
+        existing_id = active_operations.get(operation_key)
+        if existing_id:
+            raise HTTPException(
+                409,
+                f"Operation {op} is already running for profile {profile} ({existing_id}).",
+            )
+        active_operations[operation_key] = op_id
+        running_operations[op_id] = {
+            "op_id": op_id,
+            "operation": op,
+            "profile": profile,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "running": True,
+            "process": None,
+            "dry_run": "--dry-run" in all_args,
+        }
 
     cli_args = ["--profile-id", profile]
     if op != "authorize":
         cli_args.append("--no-auto-auth")
-    cmd = _build_local_cli_cmd(cli_args + [op] + extra + body.extra_args)
+    cmd = _build_local_cli_cmd(cli_args + [op] + all_args)
 
     # Функция для выполнения в потоке
     def execute_operation():
@@ -1123,7 +1494,7 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
             env["CONFIG_DIR"] = str(_config_root())
-            print(f"DEBUG: Starting operation {op_id}: {' '.join(cmd)}")
+            print(f"DEBUG: Starting operation {op_id}: {op} for profile {profile}")
 
             # Используем Popen чтобы можно было отменить процесс.
             # stdin=DEVNULL гарантирует что процесс не зависнет ожидая ввода —
@@ -1138,11 +1509,29 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
                 errors="replace",
                 cwd=str(PROJECT_ROOT),
                 env=env,
+                start_new_session=True,
             )
 
             # Сохраняем процесс для возможности отмены
             with operations_lock:
-                running_operations[op_id] = process
+                record = running_operations.get(op_id)
+                cancellation_requested = not record or record.get("cancel_requested")
+                if record:
+                    record["process"] = process
+            if cancellation_requested:
+                _terminate_operation_process(process)
+                stdout, stderr = process.communicate()
+                _finalize_operation(
+                    op_id,
+                    operation_key,
+                    {
+                        "cancelled": True,
+                        "returncode": process.returncode if process.returncode is not None else -signal.SIGTERM,
+                        "stdout": stdout[-constants.ADMIN_LOG_OUTPUT_LIMIT:] if stdout else "",
+                        "stderr": "Cancelled before operation started",
+                    },
+                )
+                return
             print(f"DEBUG: Process {op_id} started with PID {process.pid}")
 
             try:
@@ -1162,29 +1551,41 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
                     stdout, stderr = process.communicate()
                     returncode = process.returncode
 
-            # Сохраняем результат
-            with operations_lock:
-                if op_id in running_operations:
-                    running_operations[op_id] = {
-                        "completed": True,
-                        "returncode": int(returncode) if returncode is not None else 0,
-                        "stdout": stdout[-constants.ADMIN_LOG_OUTPUT_LIMIT:] if stdout else "",
-                        "stderr": stderr[-constants.ADMIN_LOG_ERROR_LIMIT:] if stderr else "",
-                    }
+            _finalize_operation(
+                op_id,
+                operation_key,
+                {
+                    "returncode": int(returncode) if returncode is not None else 0,
+                    "stdout": stdout[-constants.ADMIN_LOG_OUTPUT_LIMIT:] if stdout else "",
+                    "stderr": stderr[-constants.ADMIN_LOG_ERROR_LIMIT:] if stderr else "",
+                },
+            )
 
         except Exception as e:
             print(f"DEBUG: Exception in operation {op_id}: {type(e).__name__}: {e}")
             import traceback
             print(traceback.format_exc())
-            with operations_lock:
-                if op_id in running_operations:
-                    running_operations[op_id] = {
-                        "completed": True,
-                        "error": str(e),
-                        "returncode": 1,
-                        "stdout": "",
-                        "stderr": str(e),
-                    }
+            _finalize_operation(
+                op_id,
+                operation_key,
+                {
+                    "error": str(e),
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": str(e),
+                },
+            )
+        finally:
+            for index, value in enumerate(all_args[:-1]):
+                if value != "--letter-file":
+                    continue
+                candidate = Path(all_args[index + 1])
+                temp_dir = _profile_dir(profile) / ".admin-tmp"
+                try:
+                    if candidate.parent == temp_dir and candidate.exists():
+                        candidate.unlink()
+                except OSError:
+                    pass  # cleanup failure must not hide operation result
 
     # Запускаем операцию в отдельном потоке
     thread = threading.Thread(target=execute_operation, daemon=True)
@@ -1193,7 +1594,10 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
     # Сразу возвращаем ID операции
     return {
         "op_id": op_id,
-        "stdout": "Операция запущена в фоне...",
+        "profile": profile,
+        "operation": op,
+        "dry_run": "--dry-run" in all_args,
+        "stdout": "Operation started in background...",
         "stderr": "",
     }
 
@@ -1203,84 +1607,119 @@ def _run_operation(op: str, body: RunRequest, extra: list[str] | None = None) ->
 # ---------------------------------------------------------------------------
 
 @app.post("/api/cancel/{op_id}")
-def cancel_operation(op_id: str):
-    """Отменить выполняющуюся операцию."""
-    # Получаем процесс под защитой lock
+def cancel_operation(op_id: str, profile: str | None = Query(None)):
+    """Cancel a single profile-scoped operation, including its process group."""
     with operations_lock:
-        process = running_operations.get(op_id)
-        if not process:
-            raise HTTPException(404, f"Операция {op_id} не найдена или уже завершена")
+        record = running_operations.get(op_id)
+        if not record or record.get("completed"):
+            raise HTTPException(404, f"Operation {op_id} was not found or has already completed")
+        if profile is not None and record["profile"] != _validate_profile_name(profile):
+            raise HTTPException(404, f"Operation {op_id} was not found for this profile")
+        process = record.get("process")
+        record["cancel_requested"] = True
 
-        # Проверяем, что это действительно процесс, а не завершённый результат
-        if isinstance(process, dict) and process.get("completed"):
-            raise HTTPException(404, f"Операция {op_id} уже завершена")
+    if process is None:
+        # The background thread has reserved the lock but not spawned the child
+        # yet. It will observe cancel_requested and terminate immediately.
+        return {"ok": True, "message": f"Operation {op_id} cancellation requested"}
 
     try:
         print(f"DEBUG: Terminating process {op_id}")
-        process.terminate()
-        # Даём 3 секунды на graceful shutdown
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            print(f"DEBUG: Force killing process {op_id}")
-            process.kill()
-            process.wait()
-
-        with operations_lock:
-            running_operations.pop(op_id, None)
-        return {"ok": True, "message": f"Операция {op_id} отменена"}
+        _terminate_operation_process(process)
+        _finalize_operation(
+            op_id,
+            _operation_key(record["profile"], record["operation"]),
+            {
+                "cancelled": True,
+                "returncode": process.returncode if process.returncode is not None else -signal.SIGTERM,
+                "stderr": "Cancelled by admin user",
+                "stdout": record.get("stdout", ""),
+            },
+        )
+        return {"ok": True, "message": f"Operation {op_id} cancelled"}
     except Exception as e:
-        raise HTTPException(500, f"Ошибка при отмене: {e}")
+        raise HTTPException(500, f"Could not cancel operation: {e}") from e
 
 
 @app.get("/api/operations")
-def list_operations():
-    """Список запущенных операций."""
+def list_operations(
+    profile: str = Query("default"),
+    scope: str = Query("profile"),
+):
+    """List in-memory operations without mixing profiles by accident."""
+    normalized_scope, profiles = _profiles_for_scope(profile, scope)
+    allowed_profiles = set(profiles)
     with operations_lock:
-        ops = []
-        for op_id, proc_or_result in running_operations.items():
-            if isinstance(proc_or_result, dict) and proc_or_result.get("completed"):
-                # Завершённая операция
-                ops.append({
-                    "op_id": op_id,
-                    "running": False,
-                    "returncode": proc_or_result.get("returncode"),
-                })
-            else:
-                # Выполняющаяся операция (процесс)
-                ops.append({
-                    "op_id": op_id,
-                    "running": proc_or_result.poll() is None,
-                    "pid": proc_or_result.pid,
-                })
-    return {"operations": ops}
+        ops = [
+            {
+                key: value
+                for key, value in record.items()
+                if key not in {"process", "stdout", "stderr"} and not key.startswith("_")
+            }
+            | {
+                "pid": record["process"].pid if record.get("process") else None,
+            }
+            for record in running_operations.values()
+            if record["profile"] in allowed_profiles
+        ]
+    ops.sort(key=lambda item: item.get("started_at") or "", reverse=True)
+    return {"scope": normalized_scope, "operations": ops}
 
 
 @app.get("/api/operation-status/{op_id}")
-def get_operation_status(op_id: str):
-    """Получить статус конкретной операции."""
+def get_operation_status(op_id: str, profile: str | None = Query(None)):
+    """Get the status only when it belongs to the requested account."""
     with operations_lock:
         item = running_operations.get(op_id)
 
     if not item:
-        raise HTTPException(404, f"Операция {op_id} не найдена")
+        raise HTTPException(404, f"Operation {op_id} was not found")
+    if profile is not None and item["profile"] != _validate_profile_name(profile):
+        raise HTTPException(404, f"Operation {op_id} was not found for this profile")
+    result = {
+        "op_id": op_id,
+        "profile": item["profile"],
+        "operation": item["operation"],
+        "dry_run": item.get("dry_run", False),
+        "running": item.get("running", False),
+        "returncode": item.get("returncode"),
+        "stdout": item.get("stdout", ""),
+        "stderr": item.get("stderr", ""),
+        "started_at": item.get("started_at"),
+        "finished_at": item.get("finished_at"),
+        "cancelled": item.get("cancelled", False),
+    }
+    if item.get("process"):
+        result["pid"] = item["process"].pid
+    return result
 
-    if isinstance(item, dict) and item.get("completed"):
-        # Завершённая операция
-        return {
-            "op_id": op_id,
-            "running": False,
-            "returncode": item.get("returncode"),
-            "stdout": item.get("stdout", ""),
-            "stderr": item.get("stderr", ""),
-        }
-    else:
-        # Выполняющаяся операция
-        return {
-            "op_id": op_id,
-            "running": True,
-            "pid": item.pid if hasattr(item, 'pid') else None,
-        }
+
+@app.get("/api/operations/history")
+def list_operation_history(
+    profile: str = Query("default"),
+    scope: str = Query("profile"),
+    limit: int = Query(30, ge=1, le=200),
+):
+    """Read durable per-account run metadata after a server restart."""
+    normalized_scope, profiles = _profiles_for_scope(profile, scope)
+    entries: list[dict[str, Any]] = []
+    for account_profile in profiles:
+        path = _operation_history_path(account_profile)
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as history:
+                for line in history:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if item.get("profile") == account_profile:
+                        entries.append(item)
+        except OSError:
+            continue
+    entries.sort(key=lambda item: item.get("started_at") or "", reverse=True)
+    return {"scope": normalized_scope, "operations": entries[:limit]}
 
 
 # ---------------------------------------------------------------------------
@@ -1445,11 +1884,13 @@ def review_negotiations(
 
 
 class ReplyRequest(BaseModel):
-    message: str = ""
+    message: str = Field("", max_length=4_000)
     use_ai: bool = False
     profile: str = "default"
-    vacancy_name: str = ""
-    employer_name: str = ""
+    vacancy_name: str = Field("", max_length=500)
+    employer_name: str = Field("", max_length=500)
+    send: bool = False
+    confirm_live: bool = False
     # Если передана история — AI учтёт контекст
     # Если не передана — endpoint сам загрузит её из HH API
     history: list[dict] | None = None
@@ -1459,10 +1900,10 @@ class ReplyRequest(BaseModel):
 @app.post("/api/inbox/{neg_id}/reply")
 def send_reply(neg_id: int, body: ReplyRequest):
     """
-    Отправить сообщение в переписку.
-    При use_ai=True загружает полную историю сообщений и передаёт AI —
-    ответ будет контекстно-зависимым, а не generic.
+    Create a reply draft by default. A separate explicit confirmation is needed
+    for the irreversible HH message POST.
     """
+    profile = _validate_profile_name(body.profile)
     text = body.message.strip()
 
     if body.use_ai and not text:
@@ -1470,7 +1911,7 @@ def send_reply(neg_id: int, body: ReplyRequest):
         history = body.history
         if history is None and body.fetch_history:
             try:
-                msgs_data = _hh_get(body.profile, f"/negotiations/{neg_id}/messages", {"per_page": 20})
+                msgs_data = _hh_get(profile, f"/negotiations/{neg_id}/messages", {"per_page": 20})
                 history = msgs_data.get("items", [])
             except Exception:
                 history = []
@@ -1511,7 +1952,7 @@ def send_reply(neg_id: int, body: ReplyRequest):
         user_parts.append("\nНапиши мой следующий ответ работодателю.")
 
         client = _make_ai_client(
-            body.profile,
+            profile,
             ["openai_reply", "openai_cover_letter", "openai"],
             system,
             temperature=0.7,
@@ -1525,8 +1966,13 @@ def send_reply(neg_id: int, body: ReplyRequest):
     if not text:
         raise HTTPException(400, "Сообщение не может быть пустым")
 
-    _hh_post(body.profile, f"/negotiations/{neg_id}/messages", {"message": text})
-    return {"ok": True, "sent": text}
+    if not body.send:
+        return {"ok": True, "profile": profile, "draft": text, "sent": False}
+    if not body.confirm_live:
+        raise HTTPException(409, "Sending a message requires confirm_live=true.")
+
+    _hh_post(profile, f"/negotiations/{neg_id}/messages", {"message": text})
+    return {"ok": True, "profile": profile, "sent": text, "draft": text}
 
 
 # ---------------------------------------------------------------------------
@@ -1537,8 +1983,12 @@ def send_reply(neg_id: int, body: ReplyRequest):
 def clear_rejections(
     profile: str = Query("default"),
     dry_run: bool = Query(False),
+    confirm_live: bool = Query(False),
 ):
     """Скрыть все переписки со статусом 'discard' (отказ)."""
+    profile = _validate_profile_name(profile)
+    if not dry_run and not confirm_live:
+        raise HTTPException(409, "Clearing conversations requires confirm_live=true.")
     data = _hh_get(profile, "/negotiations", {"status": "discard", "per_page": 50})
     total = data.get("found", 0)
     items = data.get("items", [])
@@ -1670,8 +2120,11 @@ def _resolve_letter_file(profile: str, template_name: str) -> Path | None:
     if not content:
         return None
 
-    # Пишем во временный файл в директории профиля
-    tmp_path = _profile_dir(profile) / "_letter_tmp.txt"
+    # A unique per-run file prevents concurrent account jobs from overwriting
+    # each other's letter. `_run_operation` removes files from this directory.
+    tmp_dir = _profile_dir(profile) / ".admin-tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"letter-{uuid4().hex}.txt"
     tmp_path.write_text(content, encoding="utf-8")
     return tmp_path
 
@@ -1680,16 +2133,34 @@ def _resolve_letter_file(profile: str, template_name: str) -> Path | None:
 # Routes: шаблон письма (letter.txt)
 # ---------------------------------------------------------------------------
 
-LETTER_FILE = PROJECT_ROOT / "letter.txt"
+LEGACY_LETTER_FILE = PROJECT_ROOT / "letter.txt"
+
+
+def _profile_letter_file(profile: str) -> Path:
+    return _profile_dir(_validate_profile_name(profile)) / "letter.txt"
 
 
 @app.get("/api/letter-template")
-def get_letter_template():
-    """Получить содержимое шаблона сопроводительного письма."""
-    if not LETTER_FILE.exists():
-        return {"content": "", "exists": False}
-    content = LETTER_FILE.read_text(encoding="utf-8", errors="replace")
-    return {"content": content, "exists": True}
+def get_letter_template(profile: str = Query("default")):
+    """Get the account-specific fallback letter used by the admin apply form."""
+    profile = _validate_profile_name(profile)
+    profile_file = _profile_letter_file(profile)
+    if profile_file.exists():
+        return {
+            "content": profile_file.read_text(encoding="utf-8", errors="replace"),
+            "exists": True,
+            "profile": profile,
+            "source": "profile",
+        }
+    # Preserve read-only compatibility with old single-account installations.
+    if profile == constants.ADMIN_DEFAULT_PROFILE and LEGACY_LETTER_FILE.exists():
+        return {
+            "content": LEGACY_LETTER_FILE.read_text(encoding="utf-8", errors="replace"),
+            "exists": True,
+            "profile": profile,
+            "source": "legacy",
+        }
+    return {"content": "", "exists": False, "profile": profile, "source": "none"}
 
 
 class LetterTemplateUpdate(BaseModel):
@@ -1697,12 +2168,14 @@ class LetterTemplateUpdate(BaseModel):
 
 
 @app.put("/api/letter-template")
-def update_letter_template(body: LetterTemplateUpdate):
-    """Сохранить шаблон письма."""
+def update_letter_template(body: LetterTemplateUpdate, profile: str = Query("default")):
+    """Save the fallback letter for exactly one account, never globally."""
     if len(body.content) > 50_000:
         raise HTTPException(400, "Шаблон слишком большой (>50KB)")
-    LETTER_FILE.write_text(body.content, encoding="utf-8")
-    return {"ok": True, "size": len(body.content)}
+    profile = _validate_profile_name(profile)
+    _ensure_profile_storage(profile)
+    _profile_letter_file(profile).write_text(body.content, encoding="utf-8")
+    return {"ok": True, "size": len(body.content), "profile": profile}
 
 
 # ---------------------------------------------------------------------------
@@ -1725,37 +2198,97 @@ DEFAULT_MESSAGE_PROMPT = (
 class ApplyFullRequest(BaseModel):
     profile: str = "default"
     dry_run: bool = False
+    confirm_live: bool = False
+    confirm_external_email: bool = False
     # Поиск
-    search: str = ""
-    resume_id: str = ""
+    search: str = Field("", max_length=500)
+    resume_id: str = Field("", max_length=256)
     # Фильтры
     experience: str = ""          # noExperience / between1And3 / between3And6 / moreThan6
-    salary: int | None = None
+    salary: int | None = Field(None, ge=0, le=10_000_000)
     only_with_salary: bool = False
-    schedule: list[str] = []      # fullDay, shift, flexible, remote, flyInFlyOut
-    employment: list[str] = []    # full, part, project, volunteer, probation
-    area: list[str] = []          # коды городов: "1" = Москва, "2" = СПб
-    excluded_filter: str = ""     # regex для исключения по названию
+    schedule: list[str] = Field(default_factory=list)      # fullDay, shift, flexible, remote, flyInFlyOut
+    employment: list[str] = Field(default_factory=list)    # full, part, project, volunteer, probation
+    area: list[str] = Field(default_factory=list)          # коды городов: "1" = Москва, "2" = СПб
+    excluded_filter: str = Field("", max_length=500)     # regex для исключения по названию
     # AI
     ai_filter: str = ""           # "" | "light" | "heavy"
     use_ai: bool = False          # AI-генерация писем через OpenAI
-    system_prompt: str = ""       # если пусто — используется DEFAULT_SYSTEM_PROMPT
-    message_prompt: str = ""      # если пусто — используется DEFAULT_MESSAGE_PROMPT
+    system_prompt: str = Field("", max_length=8_000)       # если пусто — используется DEFAULT_SYSTEM_PROMPT
+    message_prompt: str = Field("", max_length=8_000)      # если пусто — используется DEFAULT_MESSAGE_PROMPT
     # Письмо
     force_message: bool = False   # всегда прикреплять письмо
-    template_name: str = ""       # имя шаблона из letter_templates (если не use_ai)
+    template_name: str = Field("", max_length=64)       # имя шаблона из letter_templates (если не use_ai)
     # Тесты
     skip_tests: bool = True
     # Контроль
-    max_responses: int = 100
-    response_delay: str = "1-3"
-    per_page: int = 20
-    total_pages: int = 10
+    max_responses: int = Field(100, ge=0, le=1_000)
+    response_delay: str = Field("1-3", max_length=32)
+    per_page: int = Field(20, ge=1, le=100)
+    total_pages: int = Field(1, ge=1, le=100)
     send_email: bool = False
+
+
+def _validate_apply_request(
+    body: ApplyFullRequest,
+    *,
+    require_live_confirmation: bool = False,
+) -> None:
+    """Validate values that need cross-field or CLI-compatible constraints."""
+    _validate_profile_name(body.profile)
+    allowed_schedule = {"fullDay", "shift", "flexible", "remote", "flyInFlyOut"}
+    allowed_employment = {"full", "part", "project", "volunteer", "probation"}
+    if not set(body.schedule).issubset(allowed_schedule):
+        raise HTTPException(422, "Unsupported schedule value.")
+    if len(body.schedule) > 1:
+        raise HTTPException(
+            422,
+            "The HH search endpoint supports one schedule per run; choose one schedule.",
+        )
+    if not set(body.employment).issubset(allowed_employment):
+        raise HTTPException(422, "Unsupported employment value.")
+    if body.experience and body.experience not in {
+        "noExperience",
+        "between1And3",
+        "between3And6",
+        "moreThan6",
+    }:
+        raise HTTPException(422, "Unsupported experience value.")
+    if body.ai_filter and body.ai_filter not in {"light", "heavy"}:
+        raise HTTPException(422, "Unsupported AI filter value.")
+    if any(not area.isdigit() for area in body.area):
+        raise HTTPException(422, "Each area must be a numeric HH area id.")
+    try:
+        delay_parts = [float(part) for part in body.response_delay.split("-")]
+    except ValueError as ex:
+        raise HTTPException(422, "Response delay must be a number or min-max range.") from ex
+    if len(delay_parts) not in {1, 2} or any(part < 0 for part in delay_parts):
+        raise HTTPException(422, "Response delay must be non-negative.")
+    if len(delay_parts) == 2 and delay_parts[0] > delay_parts[1]:
+        raise HTTPException(422, "Response delay minimum cannot exceed maximum.")
+    if body.excluded_filter:
+        try:
+            re.compile(body.excluded_filter)
+        except re.error as ex:
+            raise HTTPException(422, f"Invalid excluded-filter regex: {ex}") from ex
+    if require_live_confirmation and not body.dry_run:
+        if not body.confirm_live:
+            raise HTTPException(409, "Live applications require confirm_live=true.")
+        if not body.resume_id:
+            raise HTTPException(
+                422,
+                "Choose exactly one resume for a live application run.",
+            )
+        if body.send_email and not body.confirm_external_email:
+            raise HTTPException(
+                409,
+                "External email requires confirm_external_email=true.",
+            )
 
 
 def _build_apply_args(body: ApplyFullRequest) -> list[str]:
     """Собирает список аргументов CLI для apply-vacancies из ApplyFullRequest."""
+    _validate_apply_request(body)
     args: list[str] = []
 
     if body.dry_run:
@@ -1770,12 +2303,12 @@ def _build_apply_args(body: ApplyFullRequest) -> list[str]:
         args += ["--salary", str(body.salary)]
     if body.only_with_salary:
         args.append("--only-with-salary")
-    for s in body.schedule:
-        args += ["--schedule", s]
-    for e in body.employment:
-        args += ["--employment", e]
-    for a in body.area:
-        args += ["--area", a]
+    if body.schedule:
+        args += ["--schedule", body.schedule[0]]
+    if body.employment:
+        args += ["--employment", *body.employment]
+    if body.area:
+        args += ["--area", *body.area]
     if body.excluded_filter:
         args += ["--excluded-filter", body.excluded_filter]
     if body.ai_filter:
@@ -1793,6 +2326,12 @@ def _build_apply_args(body: ApplyFullRequest) -> list[str]:
         if letter_path:
             args += ["--letter-file", str(letter_path)]
         # Если шаблон не найден — продолжаем без него (будет дефолтное)
+    else:
+        profile_letter = _profile_letter_file(body.profile)
+        if profile_letter.exists():
+            args += ["--letter-file", str(profile_letter)]
+        elif body.profile == constants.ADMIN_DEFAULT_PROFILE and LEGACY_LETTER_FILE.exists():
+            args += ["--letter-file", str(LEGACY_LETTER_FILE)]
     if body.force_message:
         args.append("--force-message")
     if body.skip_tests:
@@ -1809,7 +2348,8 @@ def _build_apply_args(body: ApplyFullRequest) -> list[str]:
 @app.post("/api/run/apply-vacancies-full")
 def run_apply_vacancies_full(body: ApplyFullRequest):
     """Запустить автоотклики со всеми параметрами."""
-    req = RunRequest(profile=body.profile)
+    _validate_apply_request(body, require_live_confirmation=True)
+    req = RunRequest(profile=body.profile, confirm_live=body.confirm_live)
     return _run_operation("apply-vacancies", req, extra=_build_apply_args(body))
 
 
@@ -1942,7 +2482,8 @@ class AgentRunRequest(BaseModel):
     profile: str = "default"
     operation: str = "apply-vacancies"   # apply-vacancies | update-resumes | refresh-token
     auto_refresh: bool = True            # попробовать refresh-token если истёк
-    args: list[str] = Field(default_factory=list)   # дополнительные аргументы CLI
+    confirm_live: bool = False
+    args: list[str] = Field(default_factory=list, max_length=40)   # дополнительные аргументы CLI
     # Удобный способ запустить apply-vacancies без ручного составления args
     apply_params: ApplyFullRequest | None = None
 
@@ -1957,6 +2498,8 @@ def agent_run(body: AgentRunRequest):
     allowed_ops = {"apply-vacancies", "update-resumes", "refresh-token", "reply-employers"}
     if body.operation not in allowed_ops:
         raise HTTPException(400, f"Операция должна быть одной из: {', '.join(sorted(allowed_ops))}")
+    if any(arg in {"--profile-id", "--no-auto-auth"} for arg in body.args):
+        raise HTTPException(400, "Agent arguments cannot override the account or auth mode.")
 
     token = _get_token_info(profile)
 
@@ -1995,9 +2538,15 @@ def agent_run(body: AgentRunRequest):
     if body.operation == "apply-vacancies" and body.apply_params:
         params = body.apply_params
         params.profile = profile  # синхронизируем профиль
+        params.confirm_live = body.confirm_live
+        _validate_apply_request(params, require_live_confirmation=True)
         extra_args = _build_apply_args(params) + extra_args
 
-    req = RunRequest(profile=profile, extra_args=extra_args)
+    req = RunRequest(
+        profile=profile,
+        extra_args=extra_args,
+        confirm_live=body.confirm_live,
+    )
     result = _run_operation(body.operation, req)
     result["refreshed_token"] = refreshed
     result["token_status"] = token["status"]
@@ -2188,19 +2737,31 @@ def get_blacklist(profile: str = Query("default")):
 
 
 @app.post("/api/employers/blacklist/{employer_id}")
-def add_to_blacklist(employer_id: str, profile: str = Query("default")):
+def add_to_blacklist(
+    employer_id: str,
+    profile: str = Query("default"),
+    confirm_live: bool = Query(False),
+):
     """Добавить работодателя в чёрный список HH."""
     if not employer_id.isdigit():
         raise HTTPException(400, "employer_id должен быть числом")
+    if not confirm_live:
+        raise HTTPException(409, "Blacklisting requires confirm_live=true.")
     _hh_request(profile, "PUT", f"/employers/blacklisted/{employer_id}")
     return {"ok": True, "employer_id": employer_id, "action": "blacklisted"}
 
 
 @app.delete("/api/employers/blacklist/{employer_id}")
-def remove_from_blacklist(employer_id: str, profile: str = Query("default")):
+def remove_from_blacklist(
+    employer_id: str,
+    profile: str = Query("default"),
+    confirm_live: bool = Query(False),
+):
     """Удалить работодателя из чёрного списка HH."""
     if not employer_id.isdigit():
         raise HTTPException(400, "employer_id должен быть числом")
+    if not confirm_live:
+        raise HTTPException(409, "Removing a blacklist entry requires confirm_live=true.")
     _hh_delete(profile, f"/employers/blacklisted/{employer_id}")
     return {"ok": True, "employer_id": employer_id, "action": "unblacklisted"}
 
@@ -2214,11 +2775,12 @@ class ReplyEmployersRequest(BaseModel):
     use_ai: bool = True
     only_invitations: bool = False   # только отвечать на приглашения
     dry_run: bool = False
-    max_pages: int = 10
-    period: int | None = None        # игнорировать отклики старше N дней
-    system_prompt: str = ""
-    message_prompt: str = ""
-    reply_message: str = ""          # фиксированное сообщение (если не use_ai)
+    confirm_live: bool = False
+    max_pages: int = Field(10, ge=1, le=50)
+    period: int | None = Field(None, ge=0, le=3650)
+    system_prompt: str = Field("", max_length=8_000)
+    message_prompt: str = Field("", max_length=8_000)
+    reply_message: str = Field("", max_length=4_000)
 
 
 @app.post("/api/run/reply-employers")
@@ -2247,7 +2809,7 @@ def run_reply_employers(body: ReplyEmployersRequest):
         args += ["--period", str(body.period)]
     args += ["--max-pages", str(body.max_pages)]
 
-    req = RunRequest(profile=body.profile)
+    req = RunRequest(profile=body.profile, confirm_live=body.confirm_live)
     return _run_operation("reply-employers", req, extra=args)
 
 

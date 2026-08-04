@@ -37,9 +37,13 @@ make schedule-time TIME=10:30
 
 ### Что делает скрипт
 
-1. Создаёт 2 cron-задачи:
-   - **09:00** — `boost-resume` (поднятие резюме)
-   - **09:15** — `scripts/apply.sh` (отклики, AI-письма)
+1. Создаёт preview cron-задачи:
+   - **09:15** — `scripts/apply.sh --dry-run`
+   - **09:30** — `scripts/reply.sh --dry-run`
+
+   Resume publishing is not scheduled by default. To opt in deliberately,
+   run the setup command with `ENABLE_LIVE_RESUME_PUBLISHING=true`; it creates
+   a job with the explicit `--live` acknowledgement.
 
 2. Логи сохраняются в `logs/boost.log` и `logs/apply.log`
 
@@ -67,8 +71,8 @@ make unschedule
 crontab -e
 
 # Добавь строки (замени /path/to/project на свой):
-15 9 * * * cd /path/to/project && python3 -m hh_applicant_tool boost-resume >> /path/to/project/logs/boost.log 2>&1
-30 9 * * * cd /path/to/project && /bin/bash /path/to/project/scripts/apply.sh >> /path/to/project/logs/apply.log 2>&1
+30 9 * * * cd /path/to/project && /bin/bash /path/to/project/scripts/apply.sh --dry-run >> /path/to/project/logs/apply.log 2>&1
+45 9 * * * cd /path/to/project && /bin/bash /path/to/project/scripts/reply.sh --dry-run >> /path/to/project/logs/reply.log 2>&1
 ```
 
 ---
@@ -146,6 +150,9 @@ python3 scripts/scheduler.py --time 10:30
 
 # Отдельное время для apply
 python3 scripts/scheduler.py --time 09:00 --apply-time 09:20
+
+# Explicitly allow real applications and resume publishing
+python3 scripts/scheduler.py --live --time 09:00 --apply-time 09:20
 
 # Только boost (без apply)
 python3 scripts/scheduler.py --no-apply

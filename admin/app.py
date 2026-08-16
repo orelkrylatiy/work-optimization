@@ -635,7 +635,11 @@ def get_stats(
     recent_negotiations: list[dict[str, Any]] = []
     resume_views: list[dict[str, Any]] = []
     profile_totals: list[dict[str, Any]] = []
-    day_keys = [(date.today() - timedelta(days=offset)).isoformat() for offset in range(13, -1, -1)]
+    # Дни считаем по UTC — date('now') в SQLite тоже UTC, иначе крайние дни теряются
+    day_keys = [
+        (datetime.now(timezone.utc).date() - timedelta(days=offset)).isoformat()
+        for offset in range(13, -1, -1)
+    ]
 
     try:
         for account_profile, conn in connections:
@@ -709,8 +713,10 @@ def get_stats(
             conn.close()
 
     recent_negotiations.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    # Свежие резюме сверху, как и в /api/resumes
     resume_views.sort(
-        key=lambda item: (item.get("profile") or "", item.get("title") or ""),
+        key=lambda item: item.get("updated_at") or item.get("created_at") or "",
+        reverse=True,
     )
     snapshots = [item["snapshot_updated_at"] for item in profile_totals if item["snapshot_updated_at"]]
     return {
@@ -1053,8 +1059,17 @@ def update_config(body: ConfigUpdate, profile: str = Query("default")):
     except ValidationError as ex:
         raise HTTPException(400, f"Некорректный config.json: {ex}") from ex
 
-    # Запрещаем перезаписывать токены через API
-    safe_keys = {"api_delay", "openai", "email_settings", "proxy_url", "letter_templates"}
+    # Запрещаем перезаписывать токены через API; секции AI мёрджатся по ключам,
+    # поэтому api_key из config.json не затирается
+    safe_keys = {
+        "api_delay",
+        "openai",
+        "openai_cover_letter",
+        "openai_reply",
+        "email_settings",
+        "proxy_url",
+        "letter_templates",
+    }
     for k, v in body.data.items():
         if k in safe_keys:
             if isinstance(v, dict) and isinstance(current.get(k), dict):
@@ -1142,12 +1157,12 @@ def get_user_info(profile: str = Query("default")):
             "expires_in_seconds": expires_in_seconds,
         }
     except Exception as ex:
-        # Если не смогли получить данные, возвращаем минimalную информацию
+        # Неизвестная ошибка ≠ валидный токен: показываем профиль как проблемный
         return {
-            "token_valid": True,
-            "email": "unknown",
-            "first_name": "User",
-            "last_name": "",
+            "token_valid": False,
+            "email": None,
+            "first_name": None,
+            "last_name": None,
             "expires_in_seconds": expires_in_seconds,
             "error": str(ex),
         }
@@ -1989,29 +2004,52 @@ def clear_rejections(
     profile = _validate_profile_name(profile)
     if not dry_run and not confirm_live:
         raise HTTPException(409, "Clearing conversations requires confirm_live=true.")
-    data = _hh_get(profile, "/negotiations", {"status": "discard", "per_page": 50})
-    total = data.get("found", 0)
-    items = data.get("items", [])
-    cleared = []
-    errors = []
+    total = 0
+    cleared: list[int] = []
+    errors: list[dict[str, Any]] = []
+    failed_ids: set[int] = set()
+    page = 0
+    max_pages = 50  # защита от вечного цикла: 50 * 50 = до 2500 переписок
 
-    for n in items:
-        neg_id = n.get("id")
-        if not neg_id:
-            continue
+    while page < max_pages:
+        data = _hh_get(
+            profile,
+            "/negotiations",
+            {"status": "discard", "per_page": 50, "page": page},
+        )
+        total = max(total, int(data.get("found", 0) or 0))
+        items = data.get("items", [])
+        if not items:
+            break
+        fresh = [n for n in items if n.get("id") and n["id"] not in failed_ids and n["id"] not in cleared]
+        if not fresh:
+            break
+        for n in fresh:
+            neg_id = n["id"]
+            if dry_run:
+                cleared.append(neg_id)
+                continue
+            try:
+                _hh_delete(profile, f"/negotiations/active/{neg_id}")
+                cleared.append(neg_id)
+            except HTTPException as e:
+                failed_ids.add(neg_id)
+                errors.append({"id": neg_id, "error": e.detail})
         if dry_run:
-            cleared.append(neg_id)
-            continue
-        try:
-            _hh_delete(profile, f"/negotiations/active/{neg_id}")
-            cleared.append(neg_id)
-        except HTTPException as e:
-            errors.append({"id": neg_id, "error": e.detail})
+            # ничего не удаляем — просто листаем страницы
+            if len(cleared) >= total:
+                break
+            page += 1
+        else:
+            # после скрытия список сдвигается — читаем первую страницу заново,
+            # пока в ней есть что скрывать
+            if len(items) < 50:
+                break
 
     return {
         "total_discards": total,
         "cleared": len(cleared),
-        "cleared_ids": cleared,
+        "cleared_ids": cleared[:100],
         "errors": errors,
         "dry_run": dry_run,
     }

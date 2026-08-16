@@ -172,8 +172,9 @@ class Operation(BaseOperation):
                         await self._onetime_code_login(page)
 
                 logger.debug("Ожидание OAuth-кода...")
+                # 60 секунд мало при вводе SMS-кода извне (через чат/файл)
                 auth_code = await asyncio.wait_for(
-                    code_future, timeout=[None, 60.0][self.is_automated]
+                    code_future, timeout=[None, 300.0][self.is_automated]
                 )
 
                 page.remove_listener("request", handle_request)

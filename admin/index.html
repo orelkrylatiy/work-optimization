@@ -86,8 +86,10 @@
   /* State badge */
   .state { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
   .state-invitation { background: rgba(34,197,94,.15); color: var(--green); }
+  .state-hired { background: rgba(34,197,94,.28); color: var(--green); }
   .state-discard, .state-rejection { background: rgba(239,68,68,.15); color: var(--red); }
   .state-response, .state-phone_interview { background: rgba(245,158,11,.15); color: var(--yellow); }
+  .state-interview { background: rgba(59,130,246,.15); color: var(--blue); }
   .state-default { background: var(--bg3); color: var(--text2); }
 
   /* Search / filter */
@@ -367,7 +369,7 @@
         <li>❌ Операцию нельзя отменить после начала</li>
       </ul>
       <label style="display:flex;align-items:center;gap:8px;color:var(--yellow);font-size:13px">
-        <input type="checkbox" id="modal-live-confirm" /> I understand this sends real applications from the selected account.
+        <input type="checkbox" id="modal-live-confirm" /> Понимаю, что будут отправлены реальные отклики с выбранного аккаунта.
       </label>
     </div>
 
@@ -506,7 +508,7 @@ async function checkReady() {
       await loadProfiles();
       goPage('dashboard');
     } else {
-      toast(`config: ${s.has_config ? '✓' : '✗'} | DB: ${s.has_db ? '✓' : '✗'}`, 'error');
+      toast(`Конфиг: ${s.has_config ? '✓' : '✗'} | БД: ${s.has_db ? '✓' : '✗'}`, 'error');
     }
   } catch(e) {
     toast(e.message, 'error');
@@ -582,20 +584,20 @@ function isAllAccounts() {
 }
 
 function dataScopeLabel() {
-  return isAllAccounts() ? 'All accounts (local snapshots)' : currentProfile;
+  return isAllAccounts() ? 'Все аккаунты (снимки)' : currentProfile;
 }
 
 function requireSingleAccount(action) {
   if (!isAllAccounts()) return true;
-  toast(`${action} is available only for one account. Select an account in the profile menu.`, 'error');
+  toast(`«${action}» доступно только для одного аккаунта. Выберите аккаунт в меню профиля.`, 'error');
   return false;
 }
 
 function showSingleAccountPage(action) {
   document.getElementById('content').innerHTML = `
     <div class="section" style="max-width:680px;padding:24px">
-      <div class="section-title">Choose one account</div>
-      <p style="color:var(--text2);line-height:1.6">${escapeHtml(action)} changes or reads a live HH account. “All accounts” is deliberately limited to local reporting snapshots.</p>
+      <div class="section-title">Выберите один аккаунт</div>
+      <p style="color:var(--text2);line-height:1.6">«${escapeHtml(action)}» работает с живым аккаунтом HH. Режим «Все аккаунты» ограничен локальными снимками для отчётности.</p>
     </div>`;
 }
 
@@ -688,6 +690,7 @@ async function trackBackgroundOperation(opId, opName, hooks = {}) {
     result: null
   };
   await updateOperationsList();
+  let pollErrors = 0;
 
   while (true) {
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -695,6 +698,7 @@ async function trackBackgroundOperation(opId, opName, hooks = {}) {
     try {
       const statusUrl = `${CONSTANTS.endpoints.operation_status}/${opId}?profile=${encodeURIComponent(currentProfile)}`;
       const statusData = await fetchJson(statusUrl);
+      pollErrors = 0;
 
       if (statusData.running) {
         continue;
@@ -730,6 +734,13 @@ async function trackBackgroundOperation(opId, opName, hooks = {}) {
       return statusData;
     } catch (e) {
       console.error('Ошибка при проверке статуса:', e);
+      pollErrors += 1;
+      if (pollErrors >= 10) {
+        toast(`${opName}: потерян контакт с сервером, слежение остановлено`, 'error');
+        delete runningOps[opId];
+        await updateOperationsList();
+        return null;
+      }
     }
   }
 }
@@ -931,19 +942,51 @@ function accountCell(row) {
   return isAllAccounts() ? `<td><span class="badge">${escapeHtml(row.profile || '—')}</span></td>` : '';
 }
 
+// Канонические статусы HH: response, invitation, discard, interview, hired
 function stateHtml(state) {
   const map = {
     invitation: ['invitation', 'Приглашение'],
     discard: ['discard', 'Отказ'],
-    rejection: ['rejection', 'Отклонено'],
+    // legacy-значения из старых снимков БД
+    rejection: ['discard', 'Отклонено'],
     response: ['response', 'Отклик'],
-    phone_interview: ['phone_interview', 'Тел. собес.'],
-    interview: ['phone_interview', 'Интервью'],
-    hired: ['invitation', 'Принят'],
+    phone_interview: ['interview', 'Тел. собес.'],
+    interview: ['interview', 'Собеседование'],
+    hired: ['hired', 'Принят'],
   };
-  const [cls, label] = map[state] || ['default', escapeHtml(state || 'Unknown')];
+  const [cls, label] = map[state] || ['default', escapeHtml(state || 'Неизвестно')];
   return `<span class="state state-${cls}">${label}</span>`;
 }
+
+const EXPERIENCE_LABELS = {
+  noExperience: 'Без опыта',
+  between1And3: '1–3 года',
+  between3And6: '3–6 лет',
+  moreThan6: 'Более 6 лет',
+};
+
+function experienceLabel(v) {
+  if (!v) return '—';
+  return EXPERIENCE_LABELS[v] || v;
+}
+
+const SKIP_REASON_LABELS = {
+  excluded_filter: 'Фильтр исключения',
+  ai_rejected: 'Отклонено AI',
+  low_salary: 'Низкая зарплата',
+  blocked: 'Заблокировано',
+  filtered_by_regex: 'Фильтр исключения',
+  no_resume: 'Нет резюме',
+  tests: 'Есть тестовые задания',
+  duplicate: 'Дубликат',
+};
+
+function skipReasonLabel(v) {
+  if (!v) return '—';
+  return SKIP_REASON_LABELS[v] || v;
+}
+
+const CURRENCY_LABELS = { RUR: '₽', RUB: '₽', USD: '$', EUR: '€', KZT: '₸' };
 
 // ---------------------------------------------------------------------------
 // Modal functions for apply-vacancies
@@ -1007,7 +1050,7 @@ function closeApplyModal() {
 function confirmApplyModale(isDryRun) {
   const dryRun = pendingApplyMode === true || isDryRun === true;
   if (!dryRun && !document.getElementById('modal-live-confirm')?.checked) {
-    toast('Confirm that this is a real application run.', 'error');
+    toast('Подтвердите, что это реальный запуск откликов.', 'error');
     return;
   }
   document.getElementById('apply-modal').style.display = 'none';
@@ -1055,7 +1098,7 @@ function home() {
       <div class="home-hero">
         <h2>Добро пожаловать в HH Admin Panel</h2>
         <p>Здесь можно управлять откликами, фильтрами, сообщениями и запуском автоматических задач в одном месте.</p>
-        <div class="home-note">Важно: пропустить можно только одно действие.</div>
+        <div class="home-note">Действия можно отмечать выполненными на странице «Запуск задач».</div>
         <div class="home-actions">
           <button class="btn btn-primary" onclick="goPage('run')">▶ Перейти к запуску задач</button>
           <button class="btn btn-secondary" onclick="goPage('dashboard')">📊 Открыть дашборд</button>
@@ -1075,9 +1118,9 @@ function home() {
 // DASHBOARD
 function formatSalary(row) {
   if (!row.salary_from && !row.salary_to) return '<span style="color:var(--text2)">—</span>';
-  const cur = escapeHtml(row.currency || '');
-  const from = row.salary_from ? `от ${Number(row.salary_from).toLocaleString()}` : '';
-  const to = row.salary_to ? `до ${Number(row.salary_to).toLocaleString()}` : '';
+  const cur = CURRENCY_LABELS[row.currency] || escapeHtml(row.currency || '');
+  const from = row.salary_from ? `от ${Number(row.salary_from).toLocaleString('ru-RU')}` : '';
+  const to = row.salary_to ? `до ${Number(row.salary_to).toLocaleString('ru-RU')}` : '';
   return `<span class="salary">${[from, to].filter(Boolean).join(' ')} ${cur}</span>`;
 }
 
@@ -1098,23 +1141,24 @@ function timeAgo(dt) {
 }
 
 function snapshotLabel(value) {
-  if (!value) return 'No local snapshot yet';
+  if (!value) return 'Локальный снимок ещё не создан';
   const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? 'Unknown snapshot time' : `Snapshot updated ${parsed.toLocaleString()}`;
+  return Number.isNaN(parsed.getTime()) ? 'Время снимка неизвестно' : `Снимок обновлён ${parsed.toLocaleString('ru-RU')}`;
 }
 
 async function dashboard() {
   const c = document.getElementById('content');
-  c.innerHTML = '<div style="color:var(--text2)">Loading local snapshots…</div>';
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка локальных снимков…</div>';
   document.getElementById('topbar-actions').innerHTML =
-    `<button class="btn btn-secondary" onclick="dashboard()">🔄 Refresh</button>`;
+    `<button class="btn btn-secondary" onclick="dashboard()">🔄 Обновить</button>`;
   try {
     const d = await api(CONSTANTS.endpoints.stats);
     const t = d.totals || {};
-    const scopeColumn = isAllAccounts() ? '<th>Account</th>' : '';
+    const scopeColumn = isAllAccounts() ? '<th>Аккаунт</th>' : '';
     const scopeColspan = isAllAccounts() ? 5 : 4;
-    const stateColors = { invitation: 'green', discard: 'red', rejection: 'red', response: 'yellow', phone_interview: 'blue' };
-    const stateLabels = { invitation: 'Invitations', discard: 'Declines', rejection: 'Rejected', response: 'Applications', phone_interview: 'Phone interviews' };
+    // Канонические статусы HH: response, invitation, discard, interview, hired
+    const stateColors = { invitation: 'green', discard: 'red', response: 'yellow', interview: 'blue', hired: 'green' };
+    const stateLabels = { invitation: 'Приглашения', response: 'Отклики', interview: 'Собеседования', discard: 'Отказы', hired: 'Принят' };
     const stateMap = Object.fromEntries((d.negotiations_by_state || []).map(s => [s.state, s.cnt]));
     const stateCards = Object.entries(stateLabels).map(([state, label]) =>
       `<div class="card"><div class="card-label">${label}</div><div class="card-value ${stateColors[state] || ''}">${Number(stateMap[state]) || 0}</div></div>`
@@ -1127,25 +1171,26 @@ async function dashboard() {
       const height = Math.round((count / maxDay) * 64) + 4;
       const rawDay = typeof day?.day === 'string' ? day.day : '';
       return `<div class="day-col"><div style="font-size:10px;color:var(--text2);margin-bottom:2px">${count}</div><div class="day-bar" style="height:${height}px"></div><div class="day-label">${escapeHtml(rawDay.slice(5) || '—')}</div></div>`;
-    }).join('') || '<div style="color:var(--text2);font-size:13px;padding:20px">No data</div>';
+    }).join('') || '<div style="color:var(--text2);font-size:13px;padding:20px">Нет данных</div>';
 
     const maxSkip = Math.max(1, ...(d.skip_reasons || []).map(x => Number(x.cnt) || 0));
     const skipBars = (d.skip_reasons || []).map(reason => {
       const count = Number(reason.cnt) || 0;
       const percent = Math.round((count / maxSkip) * 100);
-      const label = escapeHtml(reason.reason || 'Unknown');
-      return `<div class="bar-row"><div class="bar-label" title="${label}">${label}</div><div class="bar-track"><div class="bar-fill" style="width:${percent}%"></div></div><div class="bar-count">${count}</div></div>`;
+      const rawLabel = String(reason.reason || 'Неизвестно');
+      const label = escapeHtml(skipReasonLabel(rawLabel));
+      return `<div class="bar-row"><div class="bar-label" title="${escapeHtml(rawLabel)}">${label}</div><div class="bar-track"><div class="bar-fill" style="width:${percent}%"></div></div><div class="bar-count">${count}</div></div>`;
     }).join('');
 
     const recentRows = (d.recent_negotiations || []).map(n => `<tr>
       ${accountCell(n)}<td>${stateHtml(n.state)}</td><td>${linkHtml(n.vacancy_url, n.vacancy_name)}</td>
       <td>${escapeHtml(n.employer_name || '—')}</td><td style="color:var(--text2)">${escapeHtml(timeAgo(n.created_at))}</td>
-    </tr>`).join('') || `<tr class="empty-row"><td colspan="${scopeColspan}">No applications in this snapshot</td></tr>`;
+    </tr>`).join('') || `<tr class="empty-row"><td colspan="${scopeColspan}">В снимке нет откликов</td></tr>`;
 
     const resumeRows = (d.resume_views || []).map(resume => `<tr>
       ${accountCell(resume)}<td>${linkHtml(resume.alternate_url || resume.url, resume.title)}</td>
       <td>${Number(resume.total_views) || 0}</td><td style="color:${Number(resume.new_views) > 0 ? 'var(--green)' : 'var(--text2)'}">${Number(resume.new_views) || 0}</td>
-    </tr>`).join('') || `<tr class="empty-row"><td colspan="${isAllAccounts() ? 4 : 3}">No resumes in this snapshot</td></tr>`;
+    </tr>`).join('') || `<tr class="empty-row"><td colspan="${isAllAccounts() ? 4 : 3}">В снимке нет резюме</td></tr>`;
 
     const accountRows = (d.profile_totals || []).map(account => `<tr>
       <td>${escapeHtml(account.profile)}</td><td>${Number(account.negotiations) || 0}</td><td>${Number(account.resumes) || 0}</td>
@@ -1155,22 +1200,22 @@ async function dashboard() {
 
     c.innerHTML = `
       <div class="section" style="padding:16px;margin-bottom:16px">
-        <div class="section-title">${isAllAccounts() ? 'All accounts' : `Account: ${escapeHtml(currentProfile)}`}</div>
-        <div style="font-size:12px;color:var(--text2)">${escapeHtml(snapshotLabel(d.snapshot_updated_at))}. Metrics come from local SQLite snapshots; live HH data is never fetched to render this page.${unavailable ? ` Unavailable: ${unavailable}.` : ''}</div>
+        <div class="section-title">${isAllAccounts() ? 'Все аккаунты' : `Аккаунт: ${escapeHtml(currentProfile)}`}</div>
+        <div style="font-size:12px;color:var(--text2)">${escapeHtml(snapshotLabel(d.snapshot_updated_at))}. Метрики считаются из локальных SQLite-снимков; страница никогда не обращается к живым данным HH.${unavailable ? ` Недоступны: ${unavailable}.` : ''}</div>
       </div>
-      <div class="section"><div class="section-title">Overview</div><div class="cards">
-        <div class="card"><div class="card-label">Applications</div><div class="card-value">${Number(t.negotiations) || 0}</div></div>
-        <div class="card"><div class="card-label">Vacancies stored</div><div class="card-value blue">${Number(t.vacancies) || 0}</div></div>
-        <div class="card"><div class="card-label">Employers</div><div class="card-value blue">${Number(t.employers) || 0}</div></div>
-        <div class="card"><div class="card-label">Skipped</div><div class="card-value">${Number(t.skipped) || 0}</div></div>${stateCards}
+      <div class="section"><div class="section-title">Обзор</div><div class="cards">
+        <div class="card"><div class="card-label">Всего откликов</div><div class="card-value">${Number(t.negotiations) || 0}</div></div>
+        <div class="card"><div class="card-label">Вакансий в базе</div><div class="card-value blue">${Number(t.vacancies) || 0}</div></div>
+        <div class="card"><div class="card-label">Работодателей</div><div class="card-value blue">${Number(t.employers) || 0}</div></div>
+        <div class="card"><div class="card-label">Пропущено</div><div class="card-value">${Number(t.skipped) || 0}</div></div>${stateCards}
       </div></div>
-      ${isAllAccounts() ? `<div class="section"><div class="section-title">Account coverage</div><div class="table-wrap"><table><thead><tr><th>Account</th><th>Applications</th><th>Resumes</th><th>Freshness</th></tr></thead><tbody>${accountRows || '<tr class="empty-row"><td colspan="4">No ready accounts</td></tr>'}</tbody></table></div></div>` : ''}
-      <div class="dashboard-grid-two"><div class="section"><div class="section-title">Applications over 14 days</div><div class="table-wrap" style="padding:16px"><div class="days-chart">${dayCols}</div></div></div>
-        <div class="section"><div class="section-title">Skip reasons</div><div class="table-wrap" style="padding:16px">${skipBars || '<div style="color:var(--text2);font-size:13px">No data</div>'}</div></div></div>
-      <div class="dashboard-grid-main"><div class="section"><div class="section-title">Recent applications <span class="badge">${(d.recent_negotiations || []).length}</span></div><div class="table-wrap"><table><thead><tr>${scopeColumn}<th>Status</th><th>Vacancy</th><th>Employer</th><th>Created</th></tr></thead><tbody>${recentRows}</tbody></table></div></div>
-        <div class="section"><div class="section-title">Resume views</div><div class="table-wrap"><table><thead><tr>${scopeColumn}<th>Resume</th><th>Total</th><th>New</th></tr></thead><tbody>${resumeRows}</tbody></table></div></div></div>`;
+      ${isAllAccounts() ? `<div class="section"><div class="section-title">Покрытие аккаунтов</div><div class="table-wrap"><table><thead><tr><th>Аккаунт</th><th>Откликов</th><th>Резюме</th><th>Свежесть снимка</th></tr></thead><tbody>${accountRows || '<tr class="empty-row"><td colspan="4">Нет готовых аккаунтов</td></tr>'}</tbody></table></div></div>` : ''}
+      <div class="dashboard-grid-two"><div class="section"><div class="section-title">Отклики за 14 дней</div><div class="table-wrap" style="padding:16px"><div class="days-chart">${dayCols}</div></div></div>
+        <div class="section"><div class="section-title">Причины пропуска</div><div class="table-wrap" style="padding:16px">${skipBars || '<div style="color:var(--text2);font-size:13px">Нет данных</div>'}</div></div></div>
+      <div class="dashboard-grid-main"><div class="section"><div class="section-title">Последние отклики <span class="badge">${(d.recent_negotiations || []).length}</span></div><div class="table-wrap"><table><thead><tr>${scopeColumn}<th>Статус</th><th>Вакансия</th><th>Работодатель</th><th>Создан</th></tr></thead><tbody>${recentRows}</tbody></table></div></div>
+        <div class="section"><div class="section-title">Просмотры резюме</div><div class="table-wrap"><table><thead><tr>${scopeColumn}<th>Резюме</th><th>Всего</th><th>Новые</th></tr></thead><tbody>${resumeRows}</tbody></table></div></div></div>`;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red);padding:20px">Dashboard error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red);padding:20px">Ошибка дашборда: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1183,13 +1228,13 @@ async function negotiations(state_filter) {
 
   c.innerHTML = `
     <div class="filters">
-      <select id="state-filter" onchange="window._negState=this.value; negotiations(this.value)">
+      <select id="state-filter" onchange="window._negState=this.value;negPage=0;negotiations(this.value)">
         <option value="">Все статусы</option>
         <option value="response">Отклик</option>
         <option value="invitation">Приглашение</option>
+        <option value="interview">Собеседование</option>
         <option value="discard">Отказ</option>
-        <option value="rejection">Отклонено</option>
-        <option value="phone_interview">Тел. собес.</option>
+        <option value="hired">Принят</option>
       </select>
     </div>
     <div style="color:var(--text2)">Загрузка...</div>`;
@@ -1219,13 +1264,13 @@ async function negotiations(state_filter) {
 
     c.innerHTML = `
       <div class="filters">
-        <select id="state-filter" onchange="window._negState=this.value; negotiations(this.value)">
+        <select id="state-filter" onchange="window._negState=this.value;negPage=0;negotiations(this.value)">
           <option value="">Все статусы</option>
           <option value="response">Отклик</option>
           <option value="invitation">Приглашение</option>
+          <option value="interview">Собеседование</option>
           <option value="discard">Отказ</option>
-          <option value="rejection">Отклонено</option>
-          <option value="phone_interview">Тел. собес.</option>
+          <option value="hired">Принят</option>
         </select>
         <span style="color:var(--text2);font-size:13px">Всего: ${r.total}</span>
       </div>
@@ -1240,7 +1285,7 @@ async function negotiations(state_filter) {
       </div>`;
     document.getElementById('state-filter').value = curState;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1270,7 +1315,7 @@ async function vacancies() {
           <td>${escapeHtml(v.employer_name || '—')}</td>
           <td>${escapeHtml(v.area_name || '—')}</td>
           <td>${formatSalary(v)}</td>
-          <td style="color:var(--text2)">${escapeHtml(v.experience || '—')}</td>
+          <td style="color:var(--text2)" title="${escapeHtml(v.experience || '')}">${escapeHtml(experienceLabel(v.experience))}</td>
           <td style="color:var(--text2)">${escapeHtml(timeAgo(v.created_at))}</td>
         </tr>`;
       });
@@ -1295,7 +1340,7 @@ async function vacancies() {
         <button class="btn btn-secondary" onclick="vacPage++;vacancies()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
       </div>`;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1314,7 +1359,7 @@ async function skipped() {
         rows += `<tr>
           ${accountCell(s)}<td style="max-width:260px">${linkHtml(s.alternate_url, s.name || s.vacancy_id)}</td>
           <td>${escapeHtml(s.employer_name || '—')}</td>
-          <td style="max-width:200px;color:var(--yellow)">${escapeHtml(s.reason)}</td>
+          <td style="max-width:200px;color:var(--yellow)" title="${escapeHtml(s.reason || '')}">${escapeHtml(skipReasonLabel(s.reason))}</td>
           <td style="color:var(--text2)">${escapeHtml(timeAgo(s.created_at))}</td>
         </tr>`;
       });
@@ -1333,7 +1378,7 @@ async function skipped() {
         <button class="btn btn-secondary" onclick="skipPage++;skipped()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
       </div>`;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1365,10 +1410,11 @@ async function employers() {
           <td>${escapeHtml(e.area_name || '—')}</td>
           <td>${site}</td>
           <td style="color:var(--blue)">${Number(e.applications_count) || 0}</td>
+          <td><button class="btn btn-danger" style="padding:4px 10px;font-size:12px" title="Скрыть вакансии этого работодателя навсегда" onclick="blacklistEmployer(${Number(e.id)}, ${JSON.stringify(e.name)})">🚫</button></td>
         </tr>`;
       });
     } else {
-      rows = `<tr class="empty-row"><td colspan="${colspan}">No employers</td></tr>`;
+      rows = `<tr class="empty-row"><td colspan="${colspan + 1}">Работодатели не найдены</td></tr>`;
     }
     c.innerHTML = `
       <div class="filters">
@@ -1378,46 +1424,57 @@ async function employers() {
         <span style="color:var(--text2);font-size:13px">Всего: ${r.total}</span>
       </div>
       <div class="table-wrap">
-        <table><thead><tr>${accountHeader}<th>Компания</th><th>Город</th><th>Сайт</th><th>Откликов</th></tr></thead>
+        <table><thead><tr>${accountHeader}<th>Компания</th><th>Город</th><th>Сайт</th><th>Откликов</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table>
       </div>
       <div class="pagination">
         <button class="btn btn-secondary" onclick="empPage=Math.max(0,empPage-1);employers()" ${empPage===0?'disabled':''}>← Назад</button>
         <span>Страница ${empPage+1}</span>
         <button class="btn btn-secondary" onclick="empPage++;employers()" ${r.items.length<50?'disabled':''}>Вперёд →</button>
+      </div>
+      <div class="section" style="margin-top:24px">
+        <div class="section-title">Чёрный список HH <span class="badge" id="bl-count">—</span></div>
+        <div style="display:flex;gap:10px;margin-bottom:12px">
+          <button class="btn btn-secondary" onclick="loadBlacklist()">🔄 Загрузить</button>
+          <span style="font-size:12px;color:var(--text2);align-self:center">Работодатели, скрытые из поиска вакансий на hh.ru</span>
+        </div>
+        <div id="blacklist-box" style="color:var(--text2);font-size:13px">Нажмите «Загрузить», чтобы получить список (нужна авторизация).</div>
+      </div>
+      <div class="section" style="margin-top:8px">
+        <div style="font-size:12px;color:var(--text2)">Каждая строка таблицы выше — кандидат на блокировку: нажмите 🚫 в строке, чтобы навсегда скрыть вакансии компании.</div>
       </div>`;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
 // RESUMES
 async function resumes() {
   const c = document.getElementById('content');
-  c.innerHTML = '<div style="color:var(--text2)">Loading resumes…</div>';
+  c.innerHTML = '<div style="color:var(--text2)">Загрузка резюме…</div>';
   document.getElementById('topbar-actions').innerHTML =
-    '<button class="btn btn-secondary" onclick="resumes()">🔄 Refresh</button>';
+    '<button class="btn btn-secondary" onclick="resumes()">🔄 Обновить</button>';
   try {
     const response = await api(CONSTANTS.endpoints.resumes);
-    const accountHeader = isAllAccounts() ? '<th>Account</th>' : '';
+    const accountHeader = isAllAccounts() ? '<th>Аккаунт</th>' : '';
     const colspan = isAllAccounts() ? 7 : 6;
-    const scopeName = isAllAccounts() ? 'all account snapshots' : `account ${escapeHtml(currentProfile)}`;
+    const scopeName = isAllAccounts() ? 'всем аккаунтам (локальные снимки)' : `аккаунту ${escapeHtml(currentProfile)}`;
     const rows = (response.items || []).map(resume => `<tr>
       ${accountCell(resume)}
       <td style="max-width:280px">${linkHtml(resume.alternate_url || resume.url, resume.title)}</td>
       <td>${escapeHtml(resume.status_name || resume.status_id || '—')}</td>
-      <td>${resume.can_publish_or_update ? 'Yes' : 'No'}</td>
+      <td>${resume.can_publish_or_update ? 'Да' : 'Нет'}</td>
       <td>${Number(resume.total_views) || 0}</td>
       <td>${Number(resume.new_views) || 0}</td>
       <td style="color:var(--text2)">${escapeHtml(timeAgo(resume.updated_at))}</td>
-    </tr>`).join('') || `<tr class="empty-row"><td colspan="${colspan}">No resumes in the selected snapshot</td></tr>`;
+    </tr>`).join('') || `<tr class="empty-row"><td colspan="${colspan}">В выбранном снимке нет резюме</td></tr>`;
     c.innerHTML = `
       <div class="section" style="padding:16px;margin-bottom:16px;color:var(--text2);font-size:13px">
-        Stored resume metadata for ${scopeName}. Full resume content is intentionally not requested until a single account is selected.
+        Показаны метаданные резюме по ${scopeName}. Полное содержимое резюме не запрашивается, пока не выбран один аккаунт.
       </div>
-      <div class="table-wrap"><table><thead><tr>${accountHeader}<th>Resume</th><th>Status</th><th>Can update</th><th>Views</th><th>New views</th><th>Snapshot updated</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      <div class="table-wrap"><table><thead><tr>${accountHeader}<th>Резюме</th><th>Статус</th><th>Можно обновлять</th><th>Просмотров</th><th>Новых</th><th>Обновлено</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } catch (e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1467,7 +1524,7 @@ async function letter() {
       </div>
       <button class="btn btn-primary" id="l-btn" onclick="generateLetter()">✨ Сгенерировать письмо</button>
       <div id="l-result" class="letter-result" style="display:none"></div>
-      <div style="margin-top:10px;display:flex;gap:8px" id="l-actions" style="display:none"></div>
+      <div id="l-actions" style="margin-top:10px;display:none;gap:8px"></div>
     </div>`;
 }
 
@@ -1549,9 +1606,9 @@ async function run() {
   const applyVacanciesDisabled = applyVacanciesRunning ? 'disabled' : '';
   const historyRows = operationHistory.map(item => `<tr>
     <td>${escapeHtml(item.operation || '—')}</td><td>${item.dry_run ? 'Dry-run' : 'Live'}</td>
-    <td>${item.cancelled ? 'Cancelled' : Number(item.returncode) === 0 ? 'Completed' : 'Failed'}</td>
+    <td>${item.cancelled ? 'Отменена' : Number(item.returncode) === 0 ? 'Завершено' : 'Ошибка'}</td>
     <td style="color:var(--text2)">${escapeHtml(timeAgo(item.finished_at || item.started_at))}</td>
-  </tr>`).join('') || '<tr class="empty-row"><td colspan="4">No completed runs recorded for this account</td></tr>';
+  </tr>`).join('') || '<tr class="empty-row"><td colspan="4">Для этого аккаунта завершённых запусков нет</td></tr>';
 
   c.innerHTML = `
     <div class="run-grid">
@@ -1562,7 +1619,7 @@ async function run() {
         </div>
         <p>Поднять резюме в поиске (publish). Выполняется мгновенно.</p>
         <div class="run-actions">
-          <button class="btn btn-success" onclick="runOp('${CONSTANTS.operations.update_resumes}', this, false)" ${updateResumeDisabled} title="${updateResumeRunning ? 'Операция already running' : ''}">
+          <button class="btn btn-success" onclick="runOp('${CONSTANTS.operations.update_resumes}', this, false)" ${updateResumeDisabled} title="${updateResumeRunning ? 'Операция уже выполняется' : ''}">
             ${updateResumeRunning ? '<span class="spinner"></span> Выполняется...' : '▶ Запустить'}
           </button>
         </div>
@@ -1595,6 +1652,25 @@ async function run() {
         </div>
         <div class="run-output" id="out-${CONSTANTS.operations.apply_vacancies}"></div>
       </div>
+      <div class="run-card">
+        <div class="run-card-header">
+          <h3>💬 Автоответы работодателям</h3>
+        </div>
+        <p>Ответить во все переписки, где последнее сообщение от работодателя. AI пишет ответ по истории чата.</p>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:normal;color:var(--text)">
+            <input type="checkbox" id="re-useai" checked> Отвечать через AI
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:normal;color:var(--text)">
+            <input type="checkbox" id="re-onlyinv"> Только на приглашения
+          </label>
+        </div>
+        <div class="run-actions">
+          <button class="btn btn-secondary" id="reply-dry-button" onclick="runReplyEmployers(true)">🧪 Dry-run</button>
+          <button class="btn btn-danger" id="reply-live-button" onclick="runReplyEmployers(false)">▶ Запустить</button>
+        </div>
+        <div class="run-output" id="out-reply-employers"></div>
+      </div>
     </div>
     <div class="section" style="margin-top:20px">
       <div class="section-title">📋 Логи</div>
@@ -1602,8 +1678,8 @@ async function run() {
       <div class="log-box" id="run-logs-box">Загрузка...</div>
     </div>
     <div class="section" style="margin-top:20px">
-      <div class="section-title">Recent runs</div>
-      <div class="table-wrap"><table><thead><tr><th>Operation</th><th>Mode</th><th>Result</th><th>Finished</th></tr></thead><tbody>${historyRows}</tbody></table></div>
+      <div class="section-title">Последние запуски</div>
+      <div class="table-wrap"><table><thead><tr><th>Операция</th><th>Режим</th><th>Результат</th><th>Завершена</th></tr></thead><tbody>${historyRows}</tbody></table></div>
     </div>
     <div style="margin-top:20px;padding:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text2);font-size:13px">
       ⚠️ Операции запускаются в фоне и могут занять несколько минут. Не закрывайте страницу до завершения.
@@ -1707,8 +1783,8 @@ async function runOp(op, btn, dryRun, alreadyConfirmed = false) {
   if (!dryRun) {
     confirmLive = alreadyConfirmed || confirm(
       op === CONSTANTS.operations.update_resumes
-        ? `Publish/update resumes for account "${currentProfile}"?`
-        : `Send real applications from account "${currentProfile}"?`
+        ? `Опубликовать/обновить резюме аккаунта "${currentProfile}"?`
+        : `Отправить реальные отклики с аккаунта "${currentProfile}"?`
     );
     if (!confirmLive) return;
   }
@@ -1762,6 +1838,7 @@ async function runOp(op, btn, dryRun, alreadyConfirmed = false) {
 
     // Polling: проверяем статус каждые 500ms
     let completed = false;
+    let pollErrors = 0;
     while (!completed) {
       await new Promise(resolve => setTimeout(resolve, 500));
 
@@ -1769,6 +1846,7 @@ async function runOp(op, btn, dryRun, alreadyConfirmed = false) {
         const statusUrl = `${CONSTANTS.endpoints.operation_status}/${opId}?profile=${encodeURIComponent(currentProfile)}`;
         const statusResp = await fetch(statusUrl);
         const statusData = await statusResp.json();
+        pollErrors = 0;
 
         if (!statusData.running) {
           // Операция завершена
@@ -1803,6 +1881,12 @@ async function runOp(op, btn, dryRun, alreadyConfirmed = false) {
         }
       } catch(e) {
         console.error('Ошибка при проверке статуса:', e);
+        pollErrors += 1;
+        if (pollErrors >= 10) {
+          toast(`${opName}: потерян контакт с сервером, слежение остановлено`, 'error');
+          delete runningOps[opId];
+          completed = true;
+        }
       }
     }
 
@@ -1820,6 +1904,37 @@ async function runOp(op, btn, dryRun, alreadyConfirmed = false) {
   }
 }
 
+async function runReplyEmployers(dryRun) {
+  if (!requireSingleAccount('Автоответы')) return;
+  const outEl = document.getElementById('out-reply-employers');
+  const confirmLive = dryRun ? false : confirm(`Отправить реальные ответы работодателям с аккаунта "${currentProfile}"?`);
+  if (!dryRun && !confirmLive) return;
+  outEl.style.display = 'block';
+  outEl.textContent = 'Запуск...';
+  try {
+    const r = await fetchJson(`/api/run/reply-employers?profile=${encodeURIComponent(currentProfile)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        profile: currentProfile,
+        dry_run: dryRun,
+        confirm_live: !dryRun,
+        use_ai: document.getElementById('re-useai')?.checked ?? true,
+        only_invitations: document.getElementById('re-onlyinv')?.checked ?? false,
+      }),
+    });
+    outEl.textContent = `Операция ${r.op_id} выполняется...`;
+    const status = await trackBackgroundOperation(r.op_id, '💬 Автоответы', {
+      outputEl: outEl,
+      onSuccess: async () => { if (currentPage === 'inbox') inbox(); },
+    });
+    if (status && Number(status.returncode) === 0 && currentPage === 'inbox') inbox();
+  } catch(e) {
+    outEl.textContent = 'Ошибка: ' + e.message;
+    toast(e.message, 'error');
+  }
+}
+
 async function cancelAndRemoveOp(opId) {
   if (!confirm('Отменить операцию?')) return;
 
@@ -1833,6 +1948,46 @@ async function cancelAndRemoveOp(opId) {
   } catch(e) {
     toast('Ошибка отмены: ' + e.message, 'error');
   }
+}
+
+// --- Чёрный список работодателей ---
+async function loadBlacklist() {
+  const box = document.getElementById('blacklist-box');
+  const badge = document.getElementById('bl-count');
+  if (!box) return;
+  box.innerHTML = '<span class="spinner"></span> Загрузка...';
+  try {
+    const r = await api('/api/employers/blacklist');
+    if (badge) badge.textContent = String(r.found ?? (r.items || []).length);
+    if (!(r.items || []).length) { box.innerHTML = 'Чёрный список пуст.'; return; }
+    box.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Компания</th><th></th></tr></thead><tbody>` +
+      r.items.map(e => `<tr>
+        <td>${linkHtml(e.alternate_url, e.name)}</td>
+        <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="unblacklistEmployer(${Number(e.id)}, ${JSON.stringify(e.name)})">✕ Разблокировать</button></td>
+      </tr>`).join('') + '</tbody></table></div>';
+  } catch(e) {
+    if (badge) badge.textContent = '!';
+    box.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function blacklistEmployer(employerId, name) {
+  if (!requireSingleAccount('Чёрный список')) return;
+  if (!confirm(`Добавить «${name}» (id ${employerId}) в чёрный список?\nВакансии этой компании больше не будут попадаться.`)) return;
+  try {
+    await fetchJson(`/api/employers/blacklist/${employerId}?profile=${encodeURIComponent(currentProfile)}&confirm_live=true`, {method: 'POST'});
+    toast(`«${name}» добавлен в чёрный список`);
+    loadBlacklist();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function unblacklistEmployer(employerId, name) {
+  if (!confirm(`Убрать «${name}» из чёрного списка?`)) return;
+  try {
+    await fetchJson(`/api/employers/blacklist/${employerId}?profile=${encodeURIComponent(currentProfile)}&confirm_live=true`, {method: 'DELETE'});
+    toast(`«${name}» разблокирован`);
+    loadBlacklist();
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 // CONFIG
@@ -1875,39 +2030,45 @@ async function config() {
       <div class="config-editor">${rows}</div>
 
       <div class="section" style="margin-top:24px">
-        <div class="section-title">Настройки OpenAI</div>
+        <div class="section-title">Настройки OpenAI (секция openai_cover_letter)</div>
         <div class="letter-form">
           <div class="form-row">
             <div class="form-group">
               <label>Модель</label>
-              <input id="cfg-model" placeholder="gpt-4o-mini" value="${data.openai?.model || ''}"/>
+              <input id="cfg-model" placeholder="gpt-4o-mini" value="${escapeHtml(data.openai_cover_letter?.model || data.openai?.model || '')}"/>
             </div>
             <div class="form-group">
               <label>Base URL (опционально)</label>
-              <input id="cfg-baseurl" placeholder="https://api.openai.com/v1" value="${data.openai?.base_url || ''}"/>
+              <input id="cfg-baseurl" placeholder="https://api.openai.com/v1/chat/completions" value="${escapeHtml(data.openai_cover_letter?.base_url || data.openai?.base_url || '')}"/>
             </div>
           </div>
           <div class="form-row">
             <div class="form-group">
               <label>Задержка между запросами к HH API (сек)</label>
-              <input id="cfg-delay" type="number" step="0.1" min="0.1" value="${data.api_delay || 0.345}"/>
+              <input id="cfg-delay" type="number" step="0.1" min="0.1" value="${escapeHtml(data.api_delay ?? 0.345)}"/>
             </div>
           </div>
           <button class="btn btn-primary" onclick="saveConfig()">💾 Сохранить</button>
+          <div style="font-size:11px;color:var(--text2);margin-top:8px">API-ключ не меняется здесь — он задаётся в config.json. Сохранение обновляет только модель и base_url, не трогая ключ.</div>
         </div>
       </div>`;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
 async function saveConfig() {
+  const delayValue = parseFloat(document.getElementById('cfg-delay').value);
+  const aiSection = {
+    model: document.getElementById('cfg-model').value.trim(),
+    base_url: document.getElementById('cfg-baseurl').value.trim(),
+  };
   const payload = {
-    api_delay: parseFloat(document.getElementById('cfg-delay').value) || 0.345,
-    openai: {
-      model: document.getElementById('cfg-model').value,
-      base_url: document.getElementById('cfg-baseurl').value,
-    }
+    api_delay: Number.isFinite(delayValue) ? delayValue : 0.345,
+    // пишем в канонические секции CLI; бэкенд мёржит, api_key не затирается
+    openai_cover_letter: aiSection,
+    openai_reply: aiSection,
+    openai: aiSection,
   };
   try {
     const r = await fetch(`${CONSTANTS.endpoints.config}?profile=` + encodeURIComponent(currentProfile), {
@@ -1970,7 +2131,10 @@ async function inbox() {
     <div class="filters">
       <select id="inbox-status" onchange="inboxStatus=this.value;inboxPage=0;inbox()">
         <option value="">Все переписки</option>
+        <option value="response">Отклики</option>
         <option value="invitation">Приглашения</option>
+        <option value="interview">Собеседования</option>
+        <option value="hired">Принят</option>
         <option value="active">Активные</option>
         <option value="discard">Отказы</option>
       </select>
@@ -1983,8 +2147,8 @@ async function inbox() {
     const r = await api(`/api/inbox?page=${inboxPage}&per_page=30${inboxStatus ? '&status='+inboxStatus : ''}`);
     if (!r.items.length) {
       c.innerHTML = `<div class="filters"><select id="inbox-status" onchange="inboxStatus=this.value;inboxPage=0;inbox()">
-        <option value="">Все переписки</option><option value="invitation">Приглашения</option>
-        <option value="active">Активные</option><option value="discard">Отказы</option></select></div>
+        <option value="">Все переписки</option><option value="response">Отклики</option><option value="invitation">Приглашения</option>
+        <option value="interview">Собеседования</option><option value="hired">Принят</option><option value="active">Активные</option><option value="discard">Отказы</option></select></div>
         <div style="color:var(--text2);text-align:center;padding:40px">Переписок не найдено</div>`;
       document.getElementById('inbox-status').value = inboxStatus;
       return;
@@ -2002,7 +2166,7 @@ async function inbox() {
         <td style="max-width:240px">${hasUpdates}${linkHtml(n.vacancy_url, n.vacancy_name)}</td>
         <td>${escapeHtml(n.employer_name || '—')}</td>
         <td style="color:var(--text2)">${escapeHtml(timeAgo(n.updated_at || n.created_at))}</td>
-        <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="event.stopPropagation();openConversation(${id})">Open →</button></td>
+        <td><button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="event.stopPropagation();openConversation(${id})">Открыть →</button></td>
       </tr>`;
     });
 
@@ -2028,13 +2192,13 @@ async function inbox() {
       <div id="conversation-panel"></div>`;
     document.getElementById('inbox-status').value = inboxStatus;
   } catch(e) {
-    c.innerHTML = `<div style="color:var(--red);padding:20px">Error: ${escapeHtml(e.message)}</div>`;
+    c.innerHTML = `<div style="color:var(--red);padding:20px">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
 async function openConversation(negId) {
   const conversation = inboxItemsById[negId] || {};
-  const vacancyName = conversation.vacancy_name || 'Conversation';
+  const vacancyName = conversation.vacancy_name || 'Переписка';
   const employerName = conversation.employer_name || 'HR';
   const panel = document.getElementById('conversation-panel');
   if (!panel) return;
@@ -2069,15 +2233,15 @@ async function openConversation(negId) {
             <textarea id="reply-text-${negId}" placeholder="Написать ответ..." style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:8px 12px;font-size:13px;resize:none;height:80px;outline:none"></textarea>
           </div>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-primary" onclick="sendReply(${Number(negId)})">📤 Send</button>
-            <button class="btn btn-secondary" onclick="genAiReply(${Number(negId)})">🤖 Draft with AI</button>
+            <button class="btn btn-primary" onclick="sendReply(${Number(negId)})">📤 Отправить</button>
+            <button class="btn btn-secondary" onclick="genAiReply(${Number(negId)})">🤖 Черновик через ИИ</button>
           </div>
         </div>
       </div>`;
     const msgsDiv = document.getElementById(`msgs-${negId}`);
     if (msgsDiv) msgsDiv.scrollTop = msgsDiv.scrollHeight;
   } catch(e) {
-    panel.innerHTML = `<div style="color:var(--red);padding:16px">Error: ${escapeHtml(e.message)}</div>`;
+    panel.innerHTML = `<div style="color:var(--red);padding:16px">Ошибка: ${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -2085,8 +2249,8 @@ async function sendReply(negId) {
   const ta = document.getElementById(`reply-text-${negId}`);
   const text = ta?.value.trim();
   if (!text) return toast('Введите сообщение', 'error');
-  const employerName = inboxItemsById[negId]?.employer_name || 'the employer';
-  if (!confirm(`Send this message to ${employerName}?`)) return;
+  const employerName = inboxItemsById[negId]?.employer_name || 'работодателю';
+  if (!confirm(`Отправить это сообщение: ${employerName}?`)) return;
 
   try {
     await fetch(`/api/inbox/${negId}/reply?profile=${encodeURIComponent(currentProfile)}`, {
@@ -2126,7 +2290,7 @@ async function genAiReply(negId) {
       })
     }).then(r => { if(!r.ok) return r.json().then(e=>{throw new Error(e.detail)}); return r.json(); });
     ta.value = r.draft || '';
-    toast('AI draft is ready for review. Nothing was sent.');
+    toast('AI-черновик готов к проверке. Ничего не отправлено.');
   } catch(e) {
     ta.value = '';
     toast(e.message, 'error');
@@ -2174,7 +2338,7 @@ async function applyForm() {
 
   // Загружаем резюме для выбора
   let resumeOpts = '<option value="">— Все резюме —</option>';
-  let templateOpts = '<option value="">Account fallback letter</option>';
+  let templateOpts = '<option value="">Стандартное письмо аккаунта</option>';
   try {
     const r = await api('/api/resumes');
     r.items.forEach(res => {
@@ -2242,7 +2406,7 @@ async function applyForm() {
       </div>
       <div class="form-row">
         <div class="form-group">
-          <label>График работы (one HH value per run)</label>
+          <label>График работы (одно значение HH за запуск)</label>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
             <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="radio" name="af-schedule" class="af-schedule" value="remote"> Удалёнка</label>
             <label style="display:flex;align-items:center;gap:4px;font-size:13px;font-weight:normal;color:var(--text)"><input type="radio" name="af-schedule" class="af-schedule" value="fullDay"> Полный день</label>
@@ -2293,7 +2457,7 @@ async function applyForm() {
       </div>
       <div class="form-row full">
         <div class="form-group">
-          <label>Letter template when AI is disabled</label>
+          <label>Шаблон письма, когда AI выключен</label>
           <select id="af-template">${templateOpts}</select>
         </div>
       </div>
@@ -2329,7 +2493,7 @@ async function applyForm() {
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="af-onlysalary"> Только с указанной зарплатой
         </label>
-        <span style="font-size:13px;color:var(--text2)">🧪 Use the dry-run button first; live runs require a separate confirmation and one resume.</span>
+        <span style="font-size:13px;color:var(--text2)">🧪 Сначала используйте Dry-run; live-запуск требует отдельного подтверждения и выбранного резюме.</span>
       </div>
 
       <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -2350,10 +2514,10 @@ async function submitApplyForm(forceDryRun) {
   const resumeId = document.getElementById('af-resume').value;
   if (!dryRun && !resumeId) {
     out.style.display = 'block';
-    out.textContent = 'Live runs require one selected resume.';
+    out.textContent = 'Для live-запуска выберите конкретное резюме.';
     return;
   }
-  if (!dryRun && !confirm(`Send up to ${document.getElementById('af-maxresp').value || 0} real applications from account "${currentProfile}"?`)) {
+  if (!dryRun && !confirm(`Отправить до ${document.getElementById('af-maxresp').value || 0} реальных откликов с аккаунта "${currentProfile}"?`)) {
     return;
   }
   out.style.display = 'block';
@@ -2413,10 +2577,15 @@ async function submitApplyForm(forceDryRun) {
 }
 
 async function pollOpResult(opId, outEl) {
+  let pollOpErrors = 0;
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 5000));
     try {
-      const s = await fetch(`/api/operation-status/${opId}`).then(r=>r.json());
+      const s = await fetch(`/api/operation-status/${opId}`).then(async r => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+        return j;
+      });
       if (!s.running) {
         const out = [s.stdout, s.stderr].filter(Boolean).join('\n--- STDERR ---\n');
         outEl.textContent = out || '(нет вывода)';
@@ -2425,7 +2594,15 @@ async function pollOpResult(opId, outEl) {
         return;
       }
       outEl.textContent = `⏳ Работает... (${(i+1)*5}с)`;
-    } catch(e) { break; }
+      pollOpErrors = 0;
+    } catch(e) {
+      pollOpErrors += 1;
+      if (pollOpErrors >= 5) {
+        outEl.textContent += `\n\n⚠️ ${escapeHtml(e.message)}`;
+        toast('Потерян контакт с сервером, слежение остановлено', 'error');
+        return;
+      }
+    }
   }
   outEl.textContent += '\n\n⚠️ Таймаут ожидания. Проверьте логи.';
 }
@@ -2433,37 +2610,153 @@ async function pollOpResult(opId, outEl) {
 // ---------------------------------------------------------------------------
 // LETTER TEMPLATE — редактор шаблона письма
 // ---------------------------------------------------------------------------
+// --- Именованные шаблоны писем ---
+let namedTemplates = {};      // пользовательские шаблоны профиля
+let builtinTemplates = {};    // встроенные
+let currentNamed = '';        // имя шаблона, открытого в редакторе
+
 async function letterTemplate() {
   const c = document.getElementById('content');
   if (isAllAccounts()) {
-    showSingleAccountPage('Cover-letter templates');
+    showSingleAccountPage('Шаблоны писем');
     return;
   }
   c.innerHTML = '<div style="color:var(--text2)">Загрузка...</div>';
 
+  let fallback = '';
   try {
     const r = await api('/api/letter-template');
-    c.innerHTML = `
-      <div style="max-width:800px">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;font-size:13px;color:var(--text2)">
-          <div style="margin-bottom:8px">This fallback belongs only to <strong style="color:var(--text)">${escapeHtml(currentProfile)}</strong>. Named templates are selectable from the application form.</div>
-          <strong style="color:var(--text)">Синтаксис шаблона:</strong>
-          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(vacancy_name)s</code> — название вакансии</span>
-          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(first_name)s</code> — ваше имя</span>
-          <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">{вар1|вар2}</code> — случайный вариант</span>
-        </div>
-        <div class="form-group" style="margin-bottom:14px">
-          <label>Содержимое letter.txt</label>
-          <textarea id="lt-content" rows="20" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:12px;font-size:13px;font-family:monospace;resize:vertical;outline:none;line-height:1.6">${escapeHtml(r.content)}</textarea>
-        </div>
-        <div style="display:flex;gap:10px">
-          <button class="btn btn-primary" onclick="saveLetterTemplate()">💾 Сохранить</button>
-          <button class="btn btn-secondary" onclick="letterTemplate()">↺ Отменить</button>
-        </div>
-      </div>`;
+    fallback = r.content || '';
   } catch(e) {
     c.innerHTML = `<div style="color:var(--red)">Ошибка: ${escapeHtml(e.message)}</div>`;
+    return;
   }
+
+  try {
+    const t = await api('/api/letter-templates');
+    namedTemplates = t.templates || {};
+    builtinTemplates = t.default_templates || {};
+  } catch(e) { namedTemplates = {}; builtinTemplates = {}; }
+
+  c.innerHTML = `
+    <div style="max-width:860px">
+      ${renderTemplatesHeader(fallback)}
+      <div id="named-list">${renderNamedList()}</div>
+      <div id="named-editor" style="display:none"></div>
+    </div>`;
+}
+
+function renderTemplatesHeader(fallback) {
+  return `
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;font-size:13px;color:var(--text2)">
+      <div style="margin-bottom:8px">Запасной шаблон (fallback) принадлежит только аккаунту <strong style="color:var(--text)">${escapeHtml(currentProfile)}</strong> и используется, когда в форме отклика не выбран именованный шаблон.</div>
+      <strong style="color:var(--text)">Синтаксис шаблона:</strong>
+      <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(vacancy_name)s</code> — название вакансии</span>
+      <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">%(first_name)s</code> — ваше имя</span>
+      <span style="margin-left:12px"><code style="background:var(--bg3);padding:2px 6px;border-radius:4px">{вар1|вар2}</code> — случайный вариант</span>
+    </div>
+    <div class="section">
+      <div class="section-title">Запасное письмо аккаунта (letter.txt)</div>
+      <div class="form-group" style="margin-bottom:14px">
+        <textarea id="lt-content" rows="10" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:12px;font-size:13px;font-family:monospace;resize:vertical;outline:none;line-height:1.6">${escapeHtml(fallback)}</textarea>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-primary" onclick="saveLetterTemplate()">💾 Сохранить fallback</button>
+        <button class="btn btn-secondary" onclick="letterTemplate()">↺ Отменить</button>
+      </div>
+    </div>
+    <div class="section" style="margin-top:20px">
+      <div class="section-title">Именованные шаблоны <span class="badge">${Object.keys(namedTemplates).length + Object.keys(builtinTemplates).length}</span></div>
+      <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="openNamedEditor('')">＋ Новый шаблон</button>
+        <button class="btn btn-secondary" onclick="seedTemplates()" title="Добавить встроенные заготовки, не перезаписывая существующие">↺ Добавить встроенные</button>
+      </div>
+    </div>`;
+}
+
+function renderNamedList() {
+  const userNames = Object.keys(namedTemplates).sort();
+  const builtinNames = Object.keys(builtinTemplates).filter(n => !namedTemplates[n]).sort();
+  let html = '<div class="table-wrap"><table><thead><tr><th>Шаблон</th><th>Тип</th><th>Действия</th></tr></thead><tbody>';
+  const row = (name, isUser) => `<tr>
+    <td>${escapeHtml(name)}</td>
+    <td>${isUser ? '<span class="state state-invitation">свой</span>' : '<span class="state state-default">встроенный</span>'}</td>
+    <td style="white-space:nowrap">
+      <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="openNamedEditor('${escapeHtml(name)}')">✏️ Открыть</button>
+      ${isUser ? ` <button class="btn btn-danger" style="padding:4px 10px;font-size:12px" onclick="deleteNamedTemplate('${escapeHtml(name)}')">🗑 Удалить</button>` : ''}
+    </td>
+  </tr>`;
+  userNames.forEach(n => html += row(n, true));
+  builtinNames.forEach(n => html += row(n, false));
+  if (!userNames.length && !builtinNames.length) {
+    html += '<tr class="empty-row"><td colspan="3">Шаблонов нет — создайте свой или добавьте встроенные</td></tr>';
+  }
+  return html + '</tbody></table></div>';
+}
+
+function openNamedEditor(name) {
+  currentNamed = name || '';
+  const isUser = !!namedTemplates[currentNamed];
+  const content = namedTemplates[currentNamed] ?? builtinTemplates[currentNamed] ?? '';
+  const editor = document.getElementById('named-editor');
+  editor.style.display = 'block';
+  editor.scrollIntoView({behavior: 'smooth'});
+  editor.innerHTML = `
+    <div class="letter-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Имя шаблона (латиница, цифры, _ и -)</label>
+          <input id="nt-name" value="${escapeHtml(currentNamed)}" ${isUser ? '' : 'placeholder="my_template"'} />
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:14px">
+        <label>Содержимое</label>
+        <textarea id="nt-content" rows="12" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:12px;font-size:13px;font-family:monospace;resize:vertical;outline:none;line-height:1.6">${escapeHtml(content)}</textarea>
+      </div>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-primary" onclick="saveNamedTemplate()">💾 Сохранить шаблон</button>
+        <button class="btn btn-secondary" onclick="closeNamedEditor()">✕ Закрыть</button>
+      </div>
+    </div>`;
+}
+
+function closeNamedEditor() {
+  const editor = document.getElementById('named-editor');
+  if (editor) { editor.style.display = 'none'; editor.innerHTML = ''; }
+  currentNamed = '';
+}
+
+async function saveNamedTemplate() {
+  const name = (document.getElementById('nt-name')?.value || '').trim();
+  const content = document.getElementById('nt-content')?.value ?? '';
+  if (!name) return toast('Введите имя шаблона', 'error');
+  try {
+    await fetchJson('/api/letter-templates', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, content, profile: currentProfile}),
+    });
+    toast(`Шаблон «${name}» сохранён`);
+    await letterTemplate();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function deleteNamedTemplate(name) {
+  if (!confirm(`Удалить шаблон «${name}»?`)) return;
+  try {
+    await fetchJson(`/api/letter-templates/${encodeURIComponent(name)}?profile=${encodeURIComponent(currentProfile)}`, {method: 'DELETE'});
+    toast(`Шаблон «${name}» удалён`);
+    if (currentNamed === name) closeNamedEditor();
+    await letterTemplate();
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function seedTemplates() {
+  try {
+    const r = await fetchJson(`/api/letter-templates/seed?profile=${encodeURIComponent(currentProfile)}`, {method: 'POST'});
+    toast(r.added?.length ? `Добавлено: ${r.added.join(', ')}` : 'Все встроенные шаблоны уже есть');
+    await letterTemplate();
+  } catch(e) { toast(e.message, 'error'); }
 }
 
 async function saveLetterTemplate() {

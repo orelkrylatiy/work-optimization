@@ -74,8 +74,10 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# VS Code
+# Editor / OS metadata
 .vscode/
+.idea/
+.DS_Store
 
 # Docker
 docker/

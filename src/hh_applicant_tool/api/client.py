@@ -27,8 +27,10 @@ __all__ = ("ApiClient", "OAuthClient")
 HH_API_URL = "https://api.hh.ru/"
 HH_OAUTH_URL = "https://hh.ru/oauth/"
 DEFAULT_DELAY = 0.345
+DEFAULT_TIMEOUT = 30.0
 
 AllowedMethods = Literal["GET", "POST", "PUT", "DELETE"]
+ALLOWED_METHODS: tuple[AllowedMethods, ...] = ("GET", "POST", "PUT", "DELETE")
 T = TypeVar("T")
 
 
@@ -43,6 +45,7 @@ class BaseClient:
     - rate limiting (задержка между запросами через self.delay)
     - автоматическую подстановку заголовков User-Agent и X-HH-App-Active
     - разбор JSON-ответов и выброс ApiError-исключений по статус-коду
+    - конечный timeout для сетевых запросов, чтобы зависший сокет не блокировал worker
     """
 
     base_url: str
@@ -50,6 +53,7 @@ class BaseClient:
     user_agent: str | None = None
     session: Session | None = None
     delay: float | None = None
+    timeout: float | tuple[float, float] | None = DEFAULT_TIMEOUT
     _previous_request_time: float = 0.0
 
     def __post_init__(self) -> None:
@@ -58,7 +62,7 @@ class BaseClient:
         if self.user_agent is None:
             self.user_agent = generate_android_useragent()
 
-        if not self.session:
+        if self.session is None:
             logger.debug("create new session")
             self.session = requests.session()
 
@@ -83,8 +87,8 @@ class BaseClient:
         as_json: bool = False,
         **kwargs: Any,
     ) -> T:
-        # Не знаю насколько это "правильно"
-        assert method in AllowedMethods.__args__
+        if method not in ALLOWED_METHODS:
+            raise ValueError(f"Unsupported HTTP method: {method}")
         params = dict(params or {})
         params.update(kwargs)
         url = self.resolve_url(endpoint)
@@ -106,6 +110,7 @@ class BaseClient:
                 **payload,
                 headers=self._default_headers(),
                 allow_redirects=False,
+                timeout=self.timeout,
             )
             try:
                 # API не отдаёт Content-Length и может вернуть пустое тело
@@ -237,6 +242,7 @@ class ApiClient(BaseClient):
             client_secret=self.client_secret,
             user_agent=self.user_agent,
             session=self.session,
+            timeout=self.timeout,
         )
 
     def _default_headers(self) -> dict[str, str]:

@@ -257,7 +257,7 @@ def generate_reply_ai(context, vacancy_name, employer_name, initiated_by_us=True
                 ],
                 "temperature": 0.3,
             },
-            timeout=30,
+            timeout=90,  # glm-5.3 иногда думает дольше 30с
         )
         response.raise_for_status()
         result = response.json()
@@ -295,8 +295,10 @@ def send_reply(neg_id, message):
             f"/negotiations/{neg_id}/messages",
             "--method",
             "POST",
-            "--data",
-            json.dumps({"message": message}, ensure_ascii=False),
+            # hh API принимает только x-www-form-urlencoded (как и отклики):
+            # JSON-body через --data уходит как json= и hh отвечает
+            # 403 message_cannot_be_empty, т.к. не видит поле message.
+            f"message={message}",
         )
         return True, None
     except Exception as e:

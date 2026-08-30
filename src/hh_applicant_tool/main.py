@@ -18,7 +18,6 @@ from pkgutil import iter_modules
 from typing import Any, Callable, Iterable
 
 import requests
-import urllib3
 
 from . import ai, api, utils
 from .constants import (
@@ -199,7 +198,6 @@ class HHApplicantTool(MegaTool):
         log_label: str,
     ) -> requests.Session:
         session = requests.Session()
-        session.verify = False
 
         if proxies:
             logger.info("Use proxies for %s: %r", log_label, proxies)
@@ -664,5 +662,4 @@ class HHApplicantTool(MegaTool):
 
 
 def main(argv: Sequence[str] | None = None) -> None | int:
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     return HHApplicantTool().run(argv)

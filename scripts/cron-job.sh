@@ -47,13 +47,9 @@ case "$JOB" in
         ;;
 esac
 
-LOCK_DIR="${HH_AUTOMATION_LOCK_DIR:-/tmp/hh-autonomy.lock}"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "$(date -Is) another HH automation job is active; skipping $JOB"
-    exit 0
-fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
-
+# Do not serialize the whole fleet here. all-profiles.sh owns a lock per HH
+# profile, so different accounts can continue working concurrently while only
+# conflicting operations for the same account are skipped.
 echo "$(date -Is) starting job=$JOB mode=$MODE"
 
 case "$JOB" in

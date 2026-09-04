@@ -58,11 +58,7 @@ class ChatOpenAI:
         """Выполняет POST-запрос с соблюдением минимального интервала между запросами."""
         with self._lock:
             if self._previous_request_time > 0:
-                delay = (
-                    self._min_request_interval
-                    - time.monotonic()
-                    + self._previous_request_time
-                )
+                delay = self._min_request_interval - time.monotonic() + self._previous_request_time
                 if delay > 0:
                     logger.debug("Wait %.2fs before OpenAI request", delay)
                     time.sleep(delay)
@@ -93,10 +89,10 @@ class ChatOpenAI:
         return max(min_interval * (attempt + 1), 1.0)
 
     def _execute_with_retry(self, payload: dict) -> dict:
-        """Отправляет payload и повторяет запрос при 429 вплоть до max_retries раз.
+        """Отправляет payload и повторяет transient failures до max_retries раз.
 
         Returns:
-            Распарсенный JSON-ответ от API.
+            Распарсенный JSON-объект от API.
 
         Raises:
             OpenAIError: при сетевой ошибке, исчерпании попыток или невалидном ответе.
@@ -138,8 +134,16 @@ class ChatOpenAI:
             except ValueError as ex:
                 raise OpenAIError(f"Invalid JSON response: {ex}") from ex
 
-            if "error" in data:
-                raise OpenAIError(data["error"]["message"])
+            if not isinstance(data, dict):
+                raise OpenAIError("Invalid JSON response: expected an object")
+
+            provider_error = data.get("error")
+            if provider_error:
+                if isinstance(provider_error, dict):
+                    message = provider_error.get("message") or str(provider_error)
+                else:
+                    message = str(provider_error)
+                raise OpenAIError(message)
 
             return data
 
@@ -174,7 +178,7 @@ class ChatOpenAI:
         try:
             content = data["choices"][0]["message"]["content"]
             return content if content is not None else ""
-        except (KeyError, IndexError) as ex:
+        except (KeyError, IndexError, TypeError) as ex:
             raise OpenAIError(f"Invalid response format: {ex}") from ex
 
     def solve_captcha(self, image_data: bytes) -> str:
@@ -203,9 +207,7 @@ class ChatOpenAI:
                     "content": [
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}"
-                            },
+                            "image_url": {"url": f"data:image/png;base64,{image_base64}"},
                         },
                         {
                             "type": "text",
@@ -227,5 +229,5 @@ class ChatOpenAI:
             captcha_text = captcha_text.strip() if captcha_text else ""
             logger.debug("Распознанный текст капчи: %s", captcha_text)
             return captcha_text
-        except (KeyError, IndexError) as ex:
+        except (KeyError, IndexError, TypeError) as ex:
             raise OpenAIError(f"Invalid response format: {ex}") from ex

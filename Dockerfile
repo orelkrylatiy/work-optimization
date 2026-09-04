@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gettext-base \
     procps \
     tzdata \
+    util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 ARG UID=1000

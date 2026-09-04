@@ -282,7 +282,10 @@ class ReplyWorker:
         return isinstance(write_state, dict) and write_state.get("allowed") is True
 
     def _vacancy_context(self, detail: dict[str, Any]) -> tuple[str, str]:
-        fallback_title = str((detail.get("display") or {}).get("title") or "вакансия")
+        display = detail.get("display")
+        fallback_title = (
+            str(display.get("title") or "вакансия") if isinstance(display, dict) else "вакансия"
+        )
         vacancy_id = str(detail.get("vacancy_id") or "")
         if not vacancy_id:
             return fallback_title, ""
@@ -313,7 +316,11 @@ class ReplyWorker:
             return None
 
         raw_messages = detail.get("messages")
-        messages = [item for item in raw_messages if isinstance(item, dict)] if isinstance(raw_messages, list) else []
+        messages = (
+            [item for item in raw_messages if isinstance(item, dict)]
+            if isinstance(raw_messages, list)
+            else []
+        )
         context, initiated_by_us = build_context(messages)
         if not context:
             return None
@@ -447,7 +454,9 @@ class ReplyWorker:
                     stats["planned"] += 1
                     continue
                 if not self.is_still_current(decision):
-                    logger.info("Chat %s changed while generating; skip stale reply", decision.chat_id)
+                    logger.info(
+                        "Chat %s changed while generating; skip stale reply", decision.chat_id
+                    )
                     stats["stale"] += 1
                     continue
                 if self.send_reply(decision, reply):

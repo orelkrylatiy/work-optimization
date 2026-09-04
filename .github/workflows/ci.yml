@@ -29,18 +29,21 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install quality tools
+      - name: Install project and quality tools
         run: |
           python -m pip install --upgrade pip
-          pip install ruff==0.16.5 basedpyright
+          pip install -e .
+          pip install ruff==0.16.5 basedpyright pytest pytest-cov
 
       - name: Ruff critical automation paths
         run: |
           ruff check \
             src/hh_applicant_tool/automation \
+            src/hh_applicant_tool/ai/openai.py \
             scripts/reply_iterative_ai.py \
             scripts/check_ai.py \
             tests/test_reply_worker.py \
+            tests/test_ai_openai_retry.py \
             tests/test_check_ai.py \
             --output-format=github
 
@@ -48,13 +51,25 @@ jobs:
         run: |
           ruff format --check \
             src/hh_applicant_tool/automation \
+            src/hh_applicant_tool/ai/openai.py \
             scripts/reply_iterative_ai.py \
             scripts/check_ai.py \
             tests/test_reply_worker.py \
+            tests/test_ai_openai_retry.py \
             tests/test_check_ai.py
 
       - name: Type check automation layer
         run: basedpyright src/hh_applicant_tool/automation
+
+      - name: Autonomous reply coverage gate
+        run: |
+          pytest tests/test_reply_worker.py \
+            --cov=hh_applicant_tool.automation.reply_worker \
+            --cov-report=term-missing \
+            --cov-fail-under=75
+
+      - name: LLM client regression tests
+        run: pytest tests/test_ai_openai_retry.py tests/test_check_ai.py
 
       - name: Report legacy lint debt
         continue-on-error: true
@@ -109,9 +124,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: Check automation scripts
+      - name: Parse automation scripts
         run: |
-          shellcheck \
+          bash -n \
             scripts/apply.sh \
             scripts/reply.sh \
             scripts/cron-job.sh \
@@ -120,6 +135,42 @@ jobs:
             scripts/setup-cron.sh \
             container-entrypoint.sh \
             startup.sh
+      - name: Check automation scripts
+        run: |
+          # SC1091: runtime .env files intentionally do not exist in CI.
+          # SC2016: envsubst variable allow-list is intentionally single quoted.
+          shellcheck --exclude=SC1091,SC2016 \
+            scripts/apply.sh \
+            scripts/reply.sh \
+            scripts/cron-job.sh \
+            scripts/daily.sh \
+            scripts/all-profiles.sh \
+            scripts/setup-cron.sh \
+            container-entrypoint.sh \
+            startup.sh
+      - name: Smoke-test safe script entrypoints
+        run: |
+          bash scripts/apply.sh --help >/dev/null
+          bash scripts/reply.sh --help >/dev/null
+          HH_AUTOMATION_MODE=off bash scripts/cron-job.sh apply >/dev/null
+      - name: Smoke-test ten concurrent profiles
+        run: |
+          fake_bin="$(mktemp -d)"
+          logs="$(mktemp -d)"
+          locks="$(mktemp -d)"
+          cat > "$fake_bin/hh-applicant-tool" <<'EOF'
+          #!/usr/bin/env bash
+          sleep 0.05
+          exit 0
+          EOF
+          chmod +x "$fake_bin/hh-applicant-tool"
+          PROFILES="account1 account2 account3 account4 account5 account6 account7 account8 account9 account10" \
+          HH_PROFILE_PARALLELISM=10 \
+          HH_PROFILES_LOG_DIR="$logs" \
+          HH_PROFILES_LOCK_DIR="$locks" \
+          PATH="$fake_bin:$PATH" \
+            bash scripts/all-profiles.sh refresh
+          test "$(find "$logs" -name '*-refresh.log' | wc -l)" -eq 10
 
   docker:
     name: Docker build

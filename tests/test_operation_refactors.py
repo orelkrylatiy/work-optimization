@@ -60,6 +60,22 @@ def make_apply_args(**overrides):
     return SimpleNamespace(**defaults)
 
 
+def make_reply_args(**overrides):
+    defaults = {
+        "resume_id": None,
+        "reply_message": None,
+        "max_pages": 5,
+        "dry_run": False,
+        "only_invitations": False,
+        "message_prompt": "prompt",
+        "use_ai": False,
+        "system_prompt": "system",
+        "period": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 def test_apply_vacancies_parses_single_delay_value() -> None:
     operation = ApplyOperation()
 
@@ -132,22 +148,10 @@ def test_reply_employers_prefers_explicit_resume_id() -> None:
     operation = ReplyOperation()
     tool = Mock()
     tool.api_client = Mock()
-    tool.first_resume_id.return_value = "fallback"
     tool.config = {}
-    args = SimpleNamespace(
-        resume_id="chosen",
-        reply_message=None,
-        max_pages=5,
-        dry_run=False,
-        only_invitations=False,
-        message_prompt="prompt",
-        use_ai=False,
-        system_prompt="system",
-        period=None,
-    )
     operation.reply_employers = Mock()
 
-    operation.run(tool, args)
+    operation.run(tool, make_reply_args(resume_id="chosen"))
 
     assert operation.resume_id == "chosen"
 
@@ -156,21 +160,41 @@ def test_reply_employers_without_resume_id_keeps_all_resumes_mode() -> None:
     operation = ReplyOperation()
     tool = Mock()
     tool.api_client = Mock()
-    tool.first_resume_id.return_value = "fallback"
     tool.config = {}
-    args = SimpleNamespace(
-        resume_id=None,
-        reply_message=None,
-        max_pages=5,
-        dry_run=False,
-        only_invitations=False,
-        message_prompt="prompt",
-        use_ai=False,
-        system_prompt="system",
-        period=None,
-    )
     operation.reply_employers = Mock()
 
-    operation.run(tool, args)
+    operation.run(tool, make_reply_args())
 
     assert operation.resume_id is None
+
+
+def test_reply_employers_ai_falls_back_to_cover_letter_provider() -> None:
+    operation = ReplyOperation()
+    tool = Mock()
+    tool.api_client = Mock()
+    tool.config = {}
+    tool.get_reply_ai.side_effect = ValueError("openai_reply missing")
+    fallback_ai = Mock()
+    tool.get_cover_letter_ai.return_value = fallback_ai
+    operation.reply_employers = Mock()
+
+    operation.run(tool, make_reply_args(use_ai=True))
+
+    assert operation.reply_ai is fallback_ai
+    tool.get_reply_ai.assert_called_once_with("system")
+    tool.get_cover_letter_ai.assert_called_once_with("system")
+
+
+def test_reply_employers_ai_missing_both_providers_fails_closed_without_crash() -> None:
+    operation = ReplyOperation()
+    tool = Mock()
+    tool.api_client = Mock()
+    tool.config = {}
+    tool.get_reply_ai.side_effect = ValueError("openai_reply missing")
+    tool.get_cover_letter_ai.side_effect = ValueError("cover provider missing")
+    operation.reply_employers = Mock()
+
+    operation.run(tool, make_reply_args(use_ai=True))
+
+    assert operation.reply_ai is None
+    operation.reply_employers.assert_called_once()

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Cron-oriented HH chat reply worker.
 
-The worker prefers the current /common/chats API. Live mode is fail-closed:
-it requires an explicit AI configuration, revalidates the last employer message
-before sending, and uses a deterministic idempotency key for each employer turn.
+The worker prefers the current /common/chats API. Live mode is fail-closed for
+configuration errors, revalidates the last employer message before sending,
+and uses a deterministic idempotency key for each employer turn. If a valid
+LLM provider fails at runtime after its retries, an optional static fallback
+reply can keep the conversation alive.
 """
 
 from __future__ import annotations
@@ -15,6 +17,10 @@ import os
 import sys
 from pathlib import Path
 
+from hh_applicant_tool.automation.reply_fallback import (
+    FallbackChatAI,
+    load_reply_fallback_config,
+)
 from hh_applicant_tool.automation.reply_worker import (
     HHCLI,
     ReplyWorker,
@@ -81,7 +87,9 @@ def main() -> int:
     if not dry_run:
         try:
             app_config = load_json_config(config_path(args.profile))
-            ai = build_ai_client(app_config, prompt)
+            primary_ai = build_ai_client(app_config, prompt)
+            fallback_config = load_reply_fallback_config(app_config)
+            ai = FallbackChatAI(primary_ai, fallback_config)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"AI configuration error: {exc}", file=sys.stderr)
             return 2
@@ -97,6 +105,7 @@ def main() -> int:
         system_prompt=prompt,
     )
     stats = worker.run()
+    stats["fallback"] = ai.fallback_uses if isinstance(ai, FallbackChatAI) else 0
     print(json.dumps(stats, ensure_ascii=False, sort_keys=True))
     return 1 if stats["errors"] else 0
 

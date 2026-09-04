@@ -1,0 +1,460 @@
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from hh_applicant_tool.ai.openai import ChatOpenAI, OpenAIError
+
+logger = logging.getLogger(__name__)
+
+EMPLOYER_ROLE = "EMPLOYER"
+APPLICANT_ROLE = "APPLICANT"
+MAX_CONTEXT_MESSAGES = 30
+MAX_REPLY_CHARS = 2000
+
+AI_CLICHES = (
+    "важно отметить",
+    "таким образом",
+    "в данном случае",
+    "не просто",
+    "дело не только",
+)
+PLACEHOLDER_TOKENS = ("[", "]", "{{", "}}", "<имя>", "<name>")
+
+
+class HHCLIError(RuntimeError):
+    """Raised when the hh-applicant-tool subprocess fails."""
+
+
+@dataclass(frozen=True)
+class ReplyWorkerConfig:
+    profile_id: str = ""
+    dry_run: bool = True
+    max_chats: int = 100
+    ai_retries: int = 1
+    send_retries: int = 2
+    send_retry_delay: float = 1.0
+
+
+@dataclass(frozen=True)
+class ReplyDecision:
+    chat_id: str
+    expected_last_message_id: str
+    context: list[str]
+    initiated_by_us: bool
+    vacancy_name: str
+    employer_name: str
+
+
+class HHCLI:
+    """Small JSON boundary around the existing CLI.
+
+    Keeping network/auth logic in the main CLI means cron and the interactive
+    commands use exactly the same token refresh and HTTP implementation.
+    """
+
+    def __init__(self, profile_id: str = "") -> None:
+        self.profile_id = profile_id
+
+    def _base_command(self) -> list[str]:
+        command = ["hh-applicant-tool", "--no-auto-auth"]
+        if self.profile_id:
+            command.extend(["--profile-id", self.profile_id])
+        return command
+
+    def call_api(
+        self,
+        endpoint: str,
+        *,
+        method: str = "GET",
+        json_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        command = [*self._base_command(), "call-api", endpoint]
+        if method != "GET":
+            command.extend(["--method", method])
+        if json_data is not None:
+            command.extend(
+                ["--data", json.dumps(json_data, ensure_ascii=False, separators=(",", ":"))]
+            )
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            details = result.stderr.strip() or result.stdout.strip() or "unknown HH CLI error"
+            raise HHCLIError(details)
+        if not result.stdout.strip():
+            return {}
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise HHCLIError(f"invalid HH JSON: {result.stdout[:300]}") from exc
+        if not isinstance(payload, dict):
+            raise HHCLIError("HH API returned a non-object response")
+        return payload
+
+
+def select_ai_config(config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Return the reply provider with an explicit cover-letter fallback."""
+    for section in ("openai_reply", "openai_cover_letter"):
+        value = config.get(section)
+        if isinstance(value, dict) and value:
+            return section, value
+    raise ValueError("configure 'openai_reply' or fallback 'openai_cover_letter'")
+
+
+def build_ai_client(config: dict[str, Any], system_prompt: str) -> ChatOpenAI:
+    section, provider = select_ai_config(config)
+    api_key = str(provider.get("api_key") or "").strip()
+    base_url = str(provider.get("base_url") or "").strip()
+    model = str(provider.get("model") or "").strip()
+    if not api_key:
+        raise ValueError(f"'{section}.api_key' is required")
+    if not base_url:
+        raise ValueError(f"'{section}.base_url' is required")
+    if not model:
+        raise ValueError(f"'{section}.model' is required")
+
+    return ChatOpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        system_prompt=system_prompt,
+        temperature=float(provider.get("temperature", 0.35)),
+        max_completion_tokens=int(provider.get("max_completion_tokens", 500)),
+        rate_limit=int(provider.get("rate_limit", 30)),
+        timeout=float(provider.get("timeout", 45.0)),
+        max_retries=int(provider.get("max_retries", 3)),
+    )
+
+
+def load_json_config(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError("config.json must contain a JSON object")
+    return payload
+
+
+def message_role(message: dict[str, Any]) -> str:
+    sender = message.get("sender_display_info")
+    if not isinstance(sender, dict):
+        return ""
+    return str(sender.get("role") or "").upper()
+
+
+def message_text(message: dict[str, Any]) -> str:
+    payload = message.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("text") or "").strip()
+
+
+def message_id(message: dict[str, Any]) -> str:
+    return str(message.get("id") or "")
+
+
+def sorted_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(messages, key=lambda item: str(item.get("creation_time") or ""))
+
+
+def reply_quality_issues(text: str) -> list[str]:
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return ["empty reply"]
+
+    issues: list[str] = []
+    lowered = normalized.lower()
+    if len(normalized) > MAX_REPLY_CHARS:
+        issues.append("reply is too long")
+    if "—" in normalized or "–" in normalized:
+        issues.append("contains a long dash")
+    if any(token in normalized for token in PLACEHOLDER_TOKENS):
+        issues.append("contains a placeholder")
+    if any(phrase in lowered for phrase in AI_CLICHES):
+        issues.append("contains an AI-style cliche")
+    return issues
+
+
+def safe_preview_reply(initiated_by_us: bool) -> str:
+    if initiated_by_us:
+        return "Здравствуйте! Спасибо за сообщение. Готов ответить на вопросы и обсудить детали."
+    return "Здравствуйте! Спасибо за приглашение. Готов ответить на вопросы и обсудить детали."
+
+
+def build_context(messages: list[dict[str, Any]]) -> tuple[list[str], bool]:
+    ordered = sorted_messages(messages)
+    if not ordered:
+        return [], False
+    first_role = message_role(ordered[0])
+    context: list[str] = []
+    for item in ordered[-MAX_CONTEXT_MESSAGES:]:
+        text = message_text(item)
+        if not text:
+            continue
+        role = message_role(item)
+        if role == APPLICANT_ROLE:
+            author = "Я"
+        elif role == EMPLOYER_ROLE:
+            author = "Работодатель"
+        else:
+            continue
+        context.append(f"{author}: {text}")
+    return context, first_role == APPLICANT_ROLE
+
+
+def deterministic_idempotency_key(chat_id: str, employer_message_id: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"hh-reply:{chat_id}:{employer_message_id}"))
+
+
+class ReplyWorker:
+    def __init__(
+        self,
+        config: ReplyWorkerConfig,
+        *,
+        hh: HHCLI,
+        ai: ChatOpenAI | None,
+        system_prompt: str,
+    ) -> None:
+        self.config = config
+        self.hh = hh
+        self.ai = ai
+        self.system_prompt = system_prompt
+
+    def collect_candidate_chats(self) -> list[dict[str, Any]]:
+        chats: list[dict[str, Any]] = []
+        page = 0
+        per_page = min(max(self.config.max_chats, 1), 100)
+        while len(chats) < self.config.max_chats:
+            payload = self.hh.call_api(f"/common/chats?page={page}&per_page={per_page}")
+            items = payload.get("items")
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "NEGOTIATION":
+                    continue
+                if item.get("block_reason"):
+                    continue
+                last_message = item.get("last_message")
+                if not isinstance(last_message, dict):
+                    continue
+                if message_role(last_message) != EMPLOYER_ROLE:
+                    continue
+                chats.append(item)
+                if len(chats) >= self.config.max_chats:
+                    break
+            pages = int(payload.get("pages") or 0)
+            if not pages or page + 1 >= pages:
+                break
+            page += 1
+        return chats
+
+    def _chat_detail(self, chat_id: str) -> dict[str, Any]:
+        return self.hh.call_api(f"/common/chats/{chat_id}/messages?order=prev&limit=50")
+
+    @staticmethod
+    def _latest_message(detail: dict[str, Any]) -> dict[str, Any] | None:
+        raw = detail.get("messages")
+        if not isinstance(raw, list):
+            return None
+        messages = [item for item in raw if isinstance(item, dict)]
+        ordered = sorted_messages(messages)
+        return ordered[-1] if ordered else None
+
+    @staticmethod
+    def _write_allowed(detail: dict[str, Any]) -> bool:
+        states = detail.get("chat_states")
+        if not isinstance(states, dict):
+            return False
+        write_state = states.get("write_message_state")
+        return isinstance(write_state, dict) and write_state.get("allowed") is True
+
+    def _vacancy_context(self, detail: dict[str, Any]) -> tuple[str, str]:
+        fallback_title = str((detail.get("display") or {}).get("title") or "вакансия")
+        vacancy_id = str(detail.get("vacancy_id") or "")
+        if not vacancy_id:
+            return fallback_title, ""
+        try:
+            vacancy = self.hh.call_api(f"/vacancies/{vacancy_id}")
+        except HHCLIError as exc:
+            logger.warning("Could not load vacancy %s: %s", vacancy_id, exc)
+            return fallback_title, ""
+        employer = vacancy.get("employer")
+        employer_name = ""
+        if isinstance(employer, dict):
+            employer_name = str(employer.get("name") or "")
+        return str(vacancy.get("name") or fallback_title), employer_name
+
+    def make_decision(self, chat: dict[str, Any]) -> ReplyDecision | None:
+        chat_id = str(chat.get("id") or "")
+        if not chat_id:
+            return None
+        detail = self._chat_detail(chat_id)
+        if detail.get("block_reason") or not self._write_allowed(detail):
+            return None
+
+        latest = self._latest_message(detail)
+        if latest is None or message_role(latest) != EMPLOYER_ROLE:
+            return None
+        latest_id = message_id(latest)
+        if not latest_id:
+            return None
+
+        raw_messages = detail.get("messages")
+        messages = [item for item in raw_messages if isinstance(item, dict)] if isinstance(raw_messages, list) else []
+        context, initiated_by_us = build_context(messages)
+        if not context:
+            return None
+        vacancy_name, employer_name = self._vacancy_context(detail)
+        return ReplyDecision(
+            chat_id=chat_id,
+            expected_last_message_id=latest_id,
+            context=context,
+            initiated_by_us=initiated_by_us,
+            vacancy_name=vacancy_name,
+            employer_name=employer_name,
+        )
+
+    def _generation_prompt(self, decision: ReplyDecision, correction: str = "") -> str:
+        situation = (
+            "Кандидат сам откликнулся на вакансию."
+            if decision.initiated_by_us
+            else "Работодатель инициировал диалог."
+        )
+        company = decision.employer_name or "не указана"
+        correction_text = f"\n\nИсправь предыдущую попытку: {correction}." if correction else ""
+        return (
+            f"Вакансия: {decision.vacancy_name}\n"
+            f"Компания: {company}\n"
+            f"Ситуация: {situation}\n\n"
+            "История переписки:\n"
+            + "\n".join(decision.context)
+            + "\n\nОтветь только текстом сообщения работодателю."
+            + correction_text
+        )
+
+    def generate_reply(self, decision: ReplyDecision) -> str | None:
+        if self.config.dry_run:
+            return safe_preview_reply(decision.initiated_by_us)
+        if self.ai is None:
+            raise ValueError("AI client is required for live replies")
+
+        correction = ""
+        for attempt in range(self.config.ai_retries + 1):
+            try:
+                reply = self.ai.complete(self._generation_prompt(decision, correction)).strip()
+            except OpenAIError as exc:
+                logger.error("AI failed for chat %s: %s", decision.chat_id, exc)
+                return None
+            issues = reply_quality_issues(reply)
+            if not issues:
+                return reply
+            logger.warning(
+                "Rejected AI reply for chat %s: %s",
+                decision.chat_id,
+                ", ".join(issues),
+            )
+            correction = "; ".join(issues)
+            if attempt >= self.config.ai_retries:
+                return None
+        return None
+
+    def is_still_current(self, decision: ReplyDecision) -> bool:
+        detail = self._chat_detail(decision.chat_id)
+        if not self._write_allowed(detail):
+            return False
+        latest = self._latest_message(detail)
+        if latest is None:
+            return False
+        return (
+            message_role(latest) == EMPLOYER_ROLE
+            and message_id(latest) == decision.expected_last_message_id
+        )
+
+    def _message_already_sent(self, decision: ReplyDecision, text: str) -> bool:
+        detail = self._chat_detail(decision.chat_id)
+        latest = self._latest_message(detail)
+        return bool(
+            latest
+            and message_role(latest) == APPLICANT_ROLE
+            and message_text(latest) == text.strip()
+        )
+
+    def send_reply(self, decision: ReplyDecision, text: str) -> bool:
+        if self.config.dry_run:
+            return True
+        key = deterministic_idempotency_key(
+            decision.chat_id,
+            decision.expected_last_message_id,
+        )
+        payload = {"idempotency_key": key, "text": text}
+        for attempt in range(self.config.send_retries + 1):
+            try:
+                self.hh.call_api(
+                    f"/common/chats/{decision.chat_id}/messages",
+                    method="POST",
+                    json_data=payload,
+                )
+                return True
+            except HHCLIError as exc:
+                if self._message_already_sent(decision, text):
+                    logger.info(
+                        "Chat %s already contains the intended reply; treating retry as success",
+                        decision.chat_id,
+                    )
+                    return True
+                if attempt >= self.config.send_retries:
+                    logger.error("Failed to send chat %s: %s", decision.chat_id, exc)
+                    return False
+                time.sleep(self.config.send_retry_delay)
+        return False
+
+    def run(self) -> dict[str, Any]:
+        stats: dict[str, Any] = {
+            "candidates": 0,
+            "planned": 0,
+            "sent": 0,
+            "stale": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+        candidates = self.collect_candidate_chats()
+        stats["candidates"] = len(candidates)
+        for chat in candidates:
+            try:
+                decision = self.make_decision(chat)
+                if decision is None:
+                    stats["skipped"] += 1
+                    continue
+                reply = self.generate_reply(decision)
+                if not reply:
+                    stats["errors"] += 1
+                    continue
+                if self.config.dry_run:
+                    logger.info("DRY-RUN chat=%s reply=%s", decision.chat_id, reply)
+                    stats["planned"] += 1
+                    continue
+                if not self.is_still_current(decision):
+                    logger.info("Chat %s changed while generating; skip stale reply", decision.chat_id)
+                    stats["stale"] += 1
+                    continue
+                if self.send_reply(decision, reply):
+                    stats["sent"] += 1
+                else:
+                    stats["errors"] += 1
+            except (HHCLIError, ValueError) as exc:
+                logger.error("Reply worker skipped a chat: %s", exc)
+                stats["errors"] += 1
+        return stats

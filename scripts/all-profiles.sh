@@ -73,6 +73,11 @@ if [[ "$COMMAND" == "boost" || "$COMMAND" == "update" ]]; then
     ARGS=("${FILTERED_ARGS[@]}")
 fi
 
+if ! command -v flock >/dev/null 2>&1; then
+    echo "flock is required for crash-safe per-profile locking" >&2
+    exit 1
+fi
+
 LOG_DIR="${HH_PROFILES_LOG_DIR:-/tmp/hh-profiles}"
 LOCK_DIR="${HH_PROFILES_LOCK_DIR:-/tmp/hh-profile-locks}"
 mkdir -p "$LOG_DIR" "$LOCK_DIR"
@@ -107,11 +112,12 @@ start_profile() {
     local lock="$LOCK_DIR/${profile}.lock"
 
     (
-        if ! mkdir "$lock" 2>/dev/null; then
+        # File-descriptor locks are released by the kernel even on crash/OOM/SIGKILL.
+        exec 9>"$lock"
+        if ! flock -n 9; then
             echo "Profile $profile is already being processed; skipped"
             exit 0
         fi
-        trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 
         case "$COMMAND" in
             boost)

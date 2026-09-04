@@ -29,7 +29,9 @@ if [[ ${#PROFILES_LIST[@]} -eq 0 ]]; then
     exit 1
 fi
 
-PARALLELISM="${HH_PROFILE_PARALLELISM:-2}"
+# Ten HH accounts are expected to be able to work concurrently. Keep this
+# configurable for larger fleets or temporarily constrained hosts/providers.
+PARALLELISM="${HH_PROFILE_PARALLELISM:-10}"
 if [[ ! "$PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
     echo "HH_PROFILE_PARALLELISM must be a positive integer: $PARALLELISM" >&2
     exit 2

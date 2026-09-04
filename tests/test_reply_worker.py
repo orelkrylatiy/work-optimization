@@ -10,18 +10,18 @@ import pytest
 from hh_applicant_tool.ai.openai import OpenAIError
 from hh_applicant_tool.automation.reply_worker import (
     APPLICANT_ROLE,
-    EMPLOYER_ROLE,
-    HHCLI,
-    HHCLIError,
-    MAX_REPLY_CHARS,
-    ReplyDecision,
-    ReplyWorker,
-    ReplyWorkerConfig,
     build_ai_client,
     build_context,
     deterministic_idempotency_key,
+    EMPLOYER_ROLE,
+    HHCLI,
+    HHCLIError,
     load_json_config,
+    MAX_REPLY_CHARS,
     reply_quality_issues,
+    ReplyDecision,
+    ReplyWorker,
+    ReplyWorkerConfig,
     select_ai_config,
 )
 

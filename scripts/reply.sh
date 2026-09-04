@@ -113,4 +113,4 @@ if [[ -n "$PROFILE_ID" ]]; then
     ARGS+=(--profile "$PROFILE_ID")
 fi
 
-exec python3 "$SCRIPT_DIR/reply_iterative_ai.py" "${ARGS[@]}"
+python3 "$SCRIPT_DIR/reply_iterative_ai.py" "${ARGS[@]}"

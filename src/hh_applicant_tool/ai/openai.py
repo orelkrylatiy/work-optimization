@@ -93,10 +93,10 @@ class ChatOpenAI:
         return max(min_interval * (attempt + 1), 1.0)
 
     def _execute_with_retry(self, payload: dict) -> dict:
-        """Отправляет payload и повторяет запрос при 429 вплоть до max_retries раз.
+        """Отправляет payload и повторяет transient failures до max_retries раз.
 
         Returns:
-            Распарсенный JSON-ответ от API.
+            Распарсенный JSON-объект от API.
 
         Raises:
             OpenAIError: при сетевой ошибке, исчерпании попыток или невалидном ответе.
@@ -138,8 +138,16 @@ class ChatOpenAI:
             except ValueError as ex:
                 raise OpenAIError(f"Invalid JSON response: {ex}") from ex
 
-            if "error" in data:
-                raise OpenAIError(data["error"]["message"])
+            if not isinstance(data, dict):
+                raise OpenAIError("Invalid JSON response: expected an object")
+
+            provider_error = data.get("error")
+            if provider_error:
+                if isinstance(provider_error, dict):
+                    message = provider_error.get("message") or str(provider_error)
+                else:
+                    message = str(provider_error)
+                raise OpenAIError(message)
 
             return data
 
@@ -174,7 +182,7 @@ class ChatOpenAI:
         try:
             content = data["choices"][0]["message"]["content"]
             return content if content is not None else ""
-        except (KeyError, IndexError) as ex:
+        except (KeyError, IndexError, TypeError) as ex:
             raise OpenAIError(f"Invalid response format: {ex}") from ex
 
     def solve_captcha(self, image_data: bytes) -> str:
@@ -227,5 +235,5 @@ class ChatOpenAI:
             captcha_text = captcha_text.strip() if captcha_text else ""
             logger.debug("Распознанный текст капчи: %s", captcha_text)
             return captcha_text
-        except (KeyError, IndexError) as ex:
+        except (KeyError, IndexError, TypeError) as ex:
             raise OpenAIError(f"Invalid response format: {ex}") from ex

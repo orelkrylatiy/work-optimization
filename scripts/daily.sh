@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-#
-# daily.sh — Ежедневный workflow: подъём резюме + отклики + ответы
-#
-# Использование:
-#   ./scripts/daily.sh [--apply-only] [--reply-only] [--full] [--dry-run|--live]
-#
-# Примеры:
-#   ./scripts/daily.sh                  # Полный dry-run workflow (по умолчанию)
-#   ./scripts/daily.sh --apply-only     # Только dry-run отклики
-#   ./scripts/daily.sh --reply-only     # Только dry-run ответы
-#   ./scripts/daily.sh --full --live    # Dry-run, затем реальный полный workflow
-#
+# daily.sh — manual one-shot workflow matching the scheduled automation paths.
 
 set -euo pipefail
 
@@ -24,22 +13,20 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
     set +a
 fi
 
-# Конфигурация
 SEARCH_QUERY="${SEARCH_QUERY:-Frontend разработчик}"
 APPLY_LIMIT="${APPLY_LIMIT:-100}"
-REPLY_ITERATIONS="${REPLY_ITERATIONS:-6}"
-REPLY_CHATS="${REPLY_CHATS:-50}"
-
-# Флаги
-APPLY_ONLY=false
-REPLY_ONLY=false
-FULL=false
+APPLY_PER_PAGE="${APPLY_PER_PAGE:-50}"
+APPLY_PAGES="${APPLY_PAGES:-20}"
+REPLY_CHATS="${REPLY_CHATS:-100}"
+PROFILE_ID="${HH_PROFILE_ID:-}"
 RUN_MODE="dry-run"
 RUN_MODE_EXPLICIT=""
+APPLY_ONLY=false
+REPLY_ONLY=false
+WITH_BOOST=false
 
-# Парсинг аргументов
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --apply-only)
             APPLY_ONLY=true
             shift
@@ -48,161 +35,118 @@ while [[ $# -gt 0 ]]; do
             REPLY_ONLY=true
             shift
             ;;
+        --with-boost)
+            WITH_BOOST=true
+            shift
+            ;;
         --full)
-            FULL=true
+            # Backward-compatible alias for a full apply+reply pass. Resume
+            # publication remains a separate explicit --with-boost decision.
             shift
             ;;
         --dry-run)
-            if [[ "$RUN_MODE_EXPLICIT" == "live" ]]; then
-                echo "Нельзя использовать --dry-run и --live одновременно" >&2
-                exit 1
-            fi
+            [[ "$RUN_MODE_EXPLICIT" == "live" ]] && { echo "Cannot combine --dry-run and --live" >&2; exit 1; }
             RUN_MODE="dry-run"
             RUN_MODE_EXPLICIT="dry-run"
             shift
             ;;
         --live)
-            if [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]]; then
-                echo "Нельзя использовать --dry-run и --live одновременно" >&2
-                exit 1
-            fi
+            [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]] && { echo "Cannot combine --dry-run and --live" >&2; exit 1; }
             RUN_MODE="live"
             RUN_MODE_EXPLICIT="live"
             shift
             ;;
         --search)
+            [[ $# -ge 2 ]] || { echo "--search requires a value" >&2; exit 2; }
             SEARCH_QUERY="$2"
             shift 2
             ;;
         --limit)
+            [[ $# -ge 2 ]] || { echo "--limit requires a value" >&2; exit 2; }
             APPLY_LIMIT="$2"
             shift 2
             ;;
+        --pages)
+            [[ $# -ge 2 ]] || { echo "--pages requires a value" >&2; exit 2; }
+            APPLY_PAGES="$2"
+            shift 2
+            ;;
+        --per-page)
+            [[ $# -ge 2 ]] || { echo "--per-page requires a value" >&2; exit 2; }
+            APPLY_PER_PAGE="$2"
+            shift 2
+            ;;
+        --chats)
+            [[ $# -ge 2 ]] || { echo "--chats requires a value" >&2; exit 2; }
+            REPLY_CHATS="$2"
+            shift 2
+            ;;
         --profile)
+            [[ $# -ge 2 ]] || { echo "--profile requires a value" >&2; exit 2; }
+            PROFILE_ID="$2"
             export HH_PROFILE_ID="$2"
             shift 2
             ;;
         -h|--help)
-            echo "Использование: $0 [--apply-only] [--reply-only] [--full] [--dry-run|--live] [--profile ID]"
-            echo ""
-            echo "Опции:"
-            echo "  --apply-only    Только отклики на вакансии"
-            echo "  --reply-only    Только ответы работодателям"
-            echo "  --full          Сначала выполнить dry-run; live только вместе с --live"
-            echo "  --dry-run       Только проверка без live-действий (по умолчанию)"
-            echo "  --live          Разрешить реальные действия"
-            echo "  --search        Поисковый запрос для откликов"
-            echo "  --limit         Лимит вакансий"
-            echo "  --profile ID    Профиль аккаунта (по умолчанию: один основной аккаунт)"
+            cat <<'EOF'
+Usage: daily.sh [--dry-run|--live] [options]
+
+  --apply-only      Run only applications.
+  --reply-only      Run only one bounded chat pass.
+  --with-boost      Also boost resumes. Requires --live.
+  --search QUERY
+  --limit N         Successful-application quota.
+  --pages N         Maximum vacancy pages scanned.
+  --per-page N      Vacancies per page.
+  --chats N         Maximum candidate chats in the reply pass.
+  --profile ID
+
+Default mode is dry-run. Unlike cron, this command performs one immediate pass
+and exits; it does not loop or sleep between chat checks.
+EOF
             exit 0
             ;;
         *)
-            echo "Неизвестная опция: $1"
-            exit 1
+            echo "Unknown option: $1" >&2
+            exit 2
             ;;
     esac
 done
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-NC='\033[0m' # No Color
-
-# Функция для печати заголовка
-print_header() {
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo ""
-}
-
-# Функция для печати подзаголовка
-print_step() {
-    echo -e "${CYAN}▶ $1${NC}"
-    echo ""
-}
-
 if [[ "$APPLY_ONLY" == true && "$REPLY_ONLY" == true ]]; then
-    echo "Нельзя использовать --apply-only и --reply-only одновременно" >&2
-    exit 1
+    echo "Cannot combine --apply-only and --reply-only" >&2
+    exit 2
+fi
+if [[ "$WITH_BOOST" == true && "$RUN_MODE" != "live" ]]; then
+    echo "--with-boost requires explicit --live" >&2
+    exit 2
 fi
 
-run_apply() {
-    local mode="$1"
-    "$SCRIPT_DIR/apply.sh" "$mode" --search "$SEARCH_QUERY" --limit "$APPLY_LIMIT"
-}
+MODE_FLAG="--dry-run"
+[[ "$RUN_MODE" == "live" ]] && MODE_FLAG="--live"
 
-run_reply() {
-    local mode="$1"
-    "$SCRIPT_DIR/reply.sh" "$mode" --iterations "$REPLY_ITERATIONS" --chats "$REPLY_CHATS"
-}
-
-run_preview_workflow() {
-    if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
-        print_step "Подъём резюме в топ"
-        echo -e "${YELLOW}🧪 Dry-run: подъём резюме пропущен${NC}"
-        echo ""
-    fi
-
-    if [[ "$REPLY_ONLY" == false ]]; then
-        print_step "Отклики на вакансии (dry-run)"
-        run_apply --dry-run
-        echo ""
-    fi
-
-    if [[ "$APPLY_ONLY" == false ]]; then
-        print_step "Ответы работодателям (dry-run)"
-        run_reply --dry-run
-        echo ""
-    fi
-}
-
-run_live_workflow() {
-    if [[ "$APPLY_ONLY" == false && "$REPLY_ONLY" == false ]]; then
-        print_step "Подъём резюме в топ (live)"
-        HH_CMD=(hh-applicant-tool --no-auto-auth)
-        if [[ -n "${HH_PROFILE_ID:-}" ]]; then
-            HH_CMD+=(--profile-id "$HH_PROFILE_ID")
-        fi
-        "${HH_CMD[@]}" boost-resume
-        echo ""
-    fi
-
-    if [[ "$REPLY_ONLY" == false ]]; then
-        print_step "Отклики на вакансии (live)"
-        run_apply --live
-        echo ""
-    fi
-
-    if [[ "$APPLY_ONLY" == false ]]; then
-        print_step "Ответы работодателям (live)"
-        run_reply --live
-        echo ""
-    fi
-}
-
-if [[ "$RUN_MODE" == "dry-run" || "$FULL" == true ]]; then
-    if [[ "$FULL" == true && "$RUN_MODE" == "live" ]]; then
-        print_header "Dry-run перед явно подтверждённым live workflow"
-    else
-        print_header "Ежедневный workflow — Dry-run (live-действия отключены)"
-    fi
-    run_preview_workflow
-
-    if [[ "$RUN_MODE" == "dry-run" ]]; then
-        print_header "✅ Dry-run завершён. Live-действия не выполнялись."
-        echo -e "${YELLOW}Для реального запуска используйте: ${NC}$0 --live"
-        exit 0
-    fi
-
-    echo -e "${YELLOW}⚠️  --live указан явно: запускаем live workflow после dry-run.${NC}"
-    echo ""
+PROFILE_ARGS=()
+if [[ -n "$PROFILE_ID" ]]; then
+    PROFILE_ARGS=(--profile "$PROFILE_ID")
 fi
 
-print_header "Ежедневный workflow — LIVE"
-run_live_workflow
-print_header "✅ Ежедневный workflow завершён!"
+echo "Daily HH pass: mode=$RUN_MODE profile=${PROFILE_ID:-default}"
+
+if [[ "$WITH_BOOST" == true ]]; then
+    "$SCRIPT_DIR/all-profiles.sh" boost --live
+fi
+
+if [[ "$REPLY_ONLY" == false ]]; then
+    "$SCRIPT_DIR/apply.sh" "$MODE_FLAG" \
+        --search "$SEARCH_QUERY" \
+        --limit "$APPLY_LIMIT" \
+        --pages "$APPLY_PAGES" \
+        --per-page "$APPLY_PER_PAGE" \
+        "${PROFILE_ARGS[@]}"
+fi
+
+if [[ "$APPLY_ONLY" == false ]]; then
+    "$SCRIPT_DIR/reply.sh" "$MODE_FLAG" \
+        --chats "$REPLY_CHATS" \
+        "${PROFILE_ARGS[@]}"
+fi

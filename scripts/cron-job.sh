@@ -13,6 +13,11 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
     source "$PROJECT_ROOT/.env"
     set +a
 fi
+if [[ -f /tmp/hh-runtime.env ]]; then
+    # Docker/compose environment intentionally overrides values from .env.
+    # shellcheck disable=SC1091
+    source /tmp/hh-runtime.env
+fi
 
 MODE="${HH_AUTOMATION_MODE:-off}"
 JOB="${1:-}"

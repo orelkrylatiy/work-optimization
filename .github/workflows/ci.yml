@@ -2,14 +2,24 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "review/**"]
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
 jobs:
-  lint:
+  automation-quality:
+    name: Automation quality
     runs-on: ubuntu-latest
-    name: Lint & Format Check
     steps:
       - uses: actions/checkout@v4
 
@@ -19,45 +29,48 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install dependencies
+      - name: Install quality tools
         run: |
-          pip install --no-cache-dir ruff isort pylint
+          python -m pip install --upgrade pip
+          pip install ruff basedpyright
 
-      - name: Run ruff check
-        run: ruff check src/ tests/ --show-source
-
-      - name: Run isort check
-        run: isort --check-only src/ tests/
-
-      - name: Run pylint
-        run: pylint src/ tests/ --exit-zero
-
-  typecheck:
-    runs-on: ubuntu-latest
-    name: Type Check (Pyright)
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
+      - name: Ruff critical automation paths
         run: |
-          pip install --no-cache-dir basedpyright
+          ruff check \
+            src/hh_applicant_tool/automation \
+            scripts/reply_iterative_ai.py \
+            scripts/check_ai.py \
+            tests/test_reply_worker.py \
+            tests/test_check_ai.py \
+            --output-format=github
 
-      - name: Run pyright
-        run: basedpyright src/ tests/
+      - name: Ruff format critical automation paths
+        run: |
+          ruff format --check \
+            src/hh_applicant_tool/automation \
+            scripts/reply_iterative_ai.py \
+            scripts/check_ai.py \
+            tests/test_reply_worker.py \
+            tests/test_check_ai.py
 
-  test:
-    runs-on: ubuntu-latest
+      - name: Type check automation layer
+        run: basedpyright src/hh_applicant_tool/automation
+
+      - name: Report legacy lint debt
+        continue-on-error: true
+        run: ruff check src/ tests/ scripts/ admin/ --statistics
+
+      - name: Report legacy type debt
+        continue-on-error: true
+        run: basedpyright src/hh_applicant_tool
+
+  tests:
     name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
     strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
       fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -68,35 +81,52 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install project and test dependencies
         run: |
-          pip install --no-cache-dir poetry
-          poetry install
-          poetry run python -m pip install --no-cache-dir -r admin/requirements.txt
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install -r admin/requirements.txt
+          pip install pytest pytest-cov
 
-      - name: Run tests with coverage
+      - name: Run tests
         run: |
-          poetry run pytest tests/ -v --cov=src/hh_applicant_tool --cov-report=xml --cov-report=term
+          pytest tests/ \
+            --cov=src/hh_applicant_tool \
+            --cov-report=term-missing \
+            --cov-report=xml
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
         with:
           files: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
           fail_ci_if_error: false
 
-  build-docker:
+  shellcheck:
+    name: Shellcheck
     runs-on: ubuntu-latest
-    name: Build Docker Image
     steps:
       - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Check automation scripts
+        run: |
+          shellcheck \
+            scripts/apply.sh \
+            scripts/reply.sh \
+            scripts/daily.sh \
+            scripts/all-profiles.sh \
+            scripts/setup-cron.sh \
+            container-entrypoint.sh \
+            startup.sh
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile

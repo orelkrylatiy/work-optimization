@@ -17,6 +17,7 @@ SEARCH_QUERY="${SEARCH_QUERY:-Frontend разработчик}"
 MAX_RESPONSES="${APPLY_LIMIT:-${LIMIT:-100}}"
 PER_PAGE="${APPLY_PER_PAGE:-50}"
 TOTAL_PAGES="${APPLY_PAGES:-20}"
+RUN_TIMEOUT="${APPLY_RUN_TIMEOUT:-3600}"
 SYSTEM_PROMPT="${SYSTEM_PROMPT:-$PROJECT_ROOT/prompts/cover_letter_frontend.txt}"
 EXCLUDED_FILTER="${EXCLUDED_FILTER:-junior|стажир|bitrix|web3|crypto|blockchain|golang|python|java|1c|продакт|менеджер|pm|дизайнер|qa|тестировщик|devops|аналитик|data|sales|продаж|рекрутер|hr|без опыта|trainee|казань|спб|минск|open\s*space|опенспейс}"
 RUN_MODE="dry-run"
@@ -57,6 +58,11 @@ while [[ $# -gt 0 ]]; do
             TOTAL_PAGES="$2"
             shift 2
             ;;
+        --timeout)
+            [[ $# -ge 2 ]] || { echo "--timeout requires seconds" >&2; exit 2; }
+            RUN_TIMEOUT="$2"
+            shift 2
+            ;;
         --system-prompt)
             [[ $# -ge 2 ]] || { echo "--system-prompt requires a value" >&2; exit 2; }
             SYSTEM_PROMPT="$2"
@@ -82,6 +88,7 @@ Usage: apply.sh [--dry-run|--live] [options]
   --limit N              Maximum successful applications for this run.
   --per-page N           Search results per page (default: 50).
   --pages N              Maximum search pages (default: 20).
+  --timeout SECONDS      Upper bound for the whole batch (default: 3600).
   --system-prompt FILE   AI system prompt template.
   --excluded-filter REGEX
   --profile ID
@@ -99,7 +106,7 @@ EOF
     esac
 done
 
-for value_name in MAX_RESPONSES PER_PAGE TOTAL_PAGES; do
+for value_name in MAX_RESPONSES PER_PAGE TOTAL_PAGES RUN_TIMEOUT; do
     value="${!value_name}"
     if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "$value_name must be a positive integer: $value" >&2
@@ -144,16 +151,25 @@ if [[ "$RUN_MODE" == "dry-run" ]]; then
     MODE_ARGS+=(--dry-run)
 fi
 
-echo "HH apply: mode=$RUN_MODE query='$SEARCH_QUERY' max_responses=$MAX_RESPONSES scan=$TOTAL_PAGES*$PER_PAGE"
-
-"${HH_CMD[@]}" apply-vacancies \
-    --search "$SEARCH_QUERY" \
-    --ai \
-    --system-prompt "$RENDERED_SYSTEM_PROMPT" \
-    --force-message \
-    --excluded-filter "$EXCLUDED_FILTER" \
-    --skip-tests \
-    --max-responses "$MAX_RESPONSES" \
-    --per-page "$PER_PAGE" \
-    --total-pages "$TOTAL_PAGES" \
+APPLY_CMD=(
+    "${HH_CMD[@]}" apply-vacancies
+    --search "$SEARCH_QUERY"
+    --ai
+    --system-prompt "$RENDERED_SYSTEM_PROMPT"
+    --force-message
+    --excluded-filter "$EXCLUDED_FILTER"
+    --skip-tests
+    --max-responses "$MAX_RESPONSES"
+    --per-page "$PER_PAGE"
+    --total-pages "$TOTAL_PAGES"
     "${MODE_ARGS[@]}"
+)
+
+echo "HH apply: mode=$RUN_MODE query='$SEARCH_QUERY' max_responses=$MAX_RESPONSES scan=$TOTAL_PAGES*$PER_PAGE timeout=${RUN_TIMEOUT}s"
+
+if command -v timeout >/dev/null 2>&1; then
+    timeout --signal=TERM --kill-after=30 "${RUN_TIMEOUT}s" "${APPLY_CMD[@]}"
+else
+    echo "Warning: 'timeout' command unavailable; running without process deadline" >&2
+    "${APPLY_CMD[@]}"
+fi

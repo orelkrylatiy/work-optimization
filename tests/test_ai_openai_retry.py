@@ -1,4 +1,4 @@
-"""Retry and validation behavior for OpenAI-compatible endpoint failures."""
+"""Retry, validation and reply-fallback behavior for OpenAI-compatible failures."""
 
 from unittest.mock import Mock
 
@@ -6,6 +6,12 @@ import pytest
 import requests
 
 from hh_applicant_tool.ai.openai import ChatOpenAI, OpenAIError
+from hh_applicant_tool.automation.reply_fallback import (
+    DEFAULT_REPLY_FALLBACK_MESSAGE,
+    FallbackChatAI,
+    ReplyFallbackConfig,
+    load_reply_fallback_config,
+)
 
 
 def make_client(session, max_retries=2):
@@ -116,3 +122,77 @@ def test_missing_choices_is_wrapped_in_openai_error() -> None:
 
     with pytest.raises(OpenAIError, match="Invalid response format"):
         make_client(session).complete("hello")
+
+
+def test_reply_fallback_defaults_to_enabled_safe_message() -> None:
+    fallback = load_reply_fallback_config({})
+
+    assert fallback.enabled is True
+    assert fallback.message == DEFAULT_REPLY_FALLBACK_MESSAGE
+
+
+def test_reply_fallback_can_be_customized_and_disabled() -> None:
+    custom = load_reply_fallback_config(
+        {
+            "reply_fallback": {
+                "enabled": True,
+                "message": "Здравствуйте! Вакансия интересна. Готов обсудить детали.",
+            }
+        }
+    )
+    disabled = load_reply_fallback_config({"reply_fallback": {"enabled": False}})
+
+    assert custom.message == "Здравствуйте! Вакансия интересна. Готов обсудить детали."
+    assert disabled.enabled is False
+
+
+def test_reply_fallback_rejects_unsafe_template() -> None:
+    with pytest.raises(ValueError, match="quality checks"):
+        load_reply_fallback_config(
+            {
+                "reply_fallback": {
+                    "enabled": True,
+                    "message": "Важно отметить — готов обсудить [вакансию].",
+                }
+            }
+        )
+
+
+def test_llm_retries_before_using_reply_fallback(monkeypatch) -> None:
+    session = Mock()
+    session.post.side_effect = [response(503), response(503)]
+    monkeypatch.setattr("hh_applicant_tool.ai.openai.time.sleep", Mock())
+    ai = FallbackChatAI(
+        make_client(session, max_retries=1),
+        ReplyFallbackConfig(),
+    )
+
+    assert ai.complete("hello") == DEFAULT_REPLY_FALLBACK_MESSAGE
+    assert session.post.call_count == 2
+    assert ai.fallback_uses == 1
+
+
+def test_disabled_reply_fallback_preserves_fail_closed_behavior(monkeypatch) -> None:
+    session = Mock()
+    session.post.side_effect = [response(503), response(503)]
+    monkeypatch.setattr("hh_applicant_tool.ai.openai.time.sleep", Mock())
+    ai = FallbackChatAI(
+        make_client(session, max_retries=1),
+        ReplyFallbackConfig(enabled=False),
+    )
+
+    with pytest.raises(OpenAIError):
+        ai.complete("hello")
+
+    assert ai.fallback_uses == 0
+
+
+def test_reply_fallback_does_not_mask_programming_errors() -> None:
+    primary = Mock()
+    primary.complete.side_effect = RuntimeError("bug")
+    ai = FallbackChatAI(primary, ReplyFallbackConfig())
+
+    with pytest.raises(RuntimeError, match="bug"):
+        ai.complete("hello")
+
+    assert ai.fallback_uses == 0

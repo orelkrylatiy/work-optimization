@@ -1,16 +1,5 @@
 #!/usr/bin/env bash
-#
-# reply.sh — Ответы работодателям (итеративные AI-ответы)
-#
-# Использование:
-#   ./scripts/reply.sh [--dry-run|--live] [--iterations N] [--chats N]
-#
-# Примеры:
-#   ./scripts/reply.sh                        # Пробный запуск (по умолчанию)
-#   ./scripts/reply.sh --live                 # Live запуск (6 итераций по 50 чатов)
-#   ./scripts/reply.sh --iterations 3         # 3 итерации
-#   ./scripts/reply.sh --chats 100            # 100 чатов за итерацию
-#
+# reply.sh — safe scheduled replies for HH chats.
 
 set -euo pipefail
 
@@ -24,153 +13,103 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
     set +a
 fi
 
-# Конфигурация
-MAX_ITERATIONS="${ITERATIONS:-6}"
-CHATS_PER_ITERATION="${CHATS:-50}"
-TELEGRAM="${HH_TELEGRAM:-${TELEGRAM:-@maxxwway}}"
+MAX_CHATS="${REPLY_CHATS:-${CHATS:-100}}"
 REPLY_PROMPT_TEMPLATE="${REPLY_PROMPT_TEMPLATE:-$PROJECT_ROOT/prompts/reply_employer.txt}"
-# Мультиаккаунт: HH_PROFILE_ID берётся из окружения или --profile флага
-
-# Парсинг аргументов
 RUN_MODE="dry-run"
 RUN_MODE_EXPLICIT=""
+PROFILE_ID="${HH_PROFILE_ID:-}"
+
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --dry-run)
-            if [[ "$RUN_MODE_EXPLICIT" == "live" ]]; then
-                echo "Нельзя использовать --dry-run и --live одновременно" >&2
-                exit 1
-            fi
+            [[ "$RUN_MODE_EXPLICIT" == "live" ]] && { echo "Cannot combine --dry-run and --live" >&2; exit 1; }
             RUN_MODE="dry-run"
             RUN_MODE_EXPLICIT="dry-run"
             shift
             ;;
         --live)
-            if [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]]; then
-                echo "Нельзя использовать --dry-run и --live одновременно" >&2
-                exit 1
-            fi
+            [[ "$RUN_MODE_EXPLICIT" == "dry-run" ]] && { echo "Cannot combine --dry-run and --live" >&2; exit 1; }
             RUN_MODE="live"
             RUN_MODE_EXPLICIT="live"
             shift
             ;;
+        --chats|--max-chats)
+            [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+            MAX_CHATS="$2"
+            shift 2
+            ;;
         --iterations)
-            MAX_ITERATIONS="$2"
-            shift 2
-            ;;
-        --chats)
-            CHATS_PER_ITERATION="$2"
-            shift 2
-            ;;
-        --telegram)
-            TELEGRAM="$2"
-            export HH_TELEGRAM="$2"
+            # Kept only for compatibility with old invocations. The new worker
+            # handles one bounded snapshot per cron run instead of sleeping in
+            # a long multi-iteration process.
+            [[ $# -ge 2 ]] || { echo "--iterations requires a value" >&2; exit 2; }
+            echo "Warning: --iterations is deprecated and ignored; use hourly cron instead." >&2
             shift 2
             ;;
         --profile)
+            [[ $# -ge 2 ]] || { echo "--profile requires a value" >&2; exit 2; }
+            PROFILE_ID="$2"
             export HH_PROFILE_ID="$2"
             shift 2
             ;;
+        --telegram)
+            [[ $# -ge 2 ]] || { echo "--telegram requires a value" >&2; exit 2; }
+            export HH_TELEGRAM="$2"
+            shift 2
+            ;;
         -h|--help)
-            echo "Использование: $0 [--dry-run|--live] [--iterations N] [--chats N] [--profile ID]"
-            echo ""
-            echo "Опции:"
-            echo "  --dry-run           Пробный запуск без отправки (по умолчанию)"
-            echo "  --live              Разрешить реальную отправку сообщений"
-            echo "  --iterations N      Максимум итераций (по умолчанию: 6)"
-            echo "  --chats N           Чатов за итерацию (по умолчанию: 50)"
-            echo "  --profile ID        Профиль аккаунта (или HH_PROFILE_ID=...)"
+            cat <<'EOF'
+Usage: reply.sh [--dry-run|--live] [--chats N] [--profile ID]
+
+  --dry-run       Inspect chats and print deterministic previews; never calls AI or sends.
+  --live          Generate replies with AI and send them through /common/chats.
+  --chats N       Maximum candidate chats for this cron run (default: 100).
+  --profile ID    HH profile id.
+EOF
             exit 0
             ;;
         *)
-            echo "Неизвестная опция: $1"
-            exit 1
+            echo "Unknown option: $1" >&2
+            exit 2
             ;;
     esac
 done
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-REPLY_SYSTEM_PROMPT_FILE=""
-
-cleanup_rendered_files() {
-    if [[ -n "${REPLY_SYSTEM_PROMPT_FILE:-}" && -f "$REPLY_SYSTEM_PROMPT_FILE" ]]; then
-        rm -f "$REPLY_SYSTEM_PROMPT_FILE"
-    fi
-    return 0
-}
-
-render_prompt_template() {
-    local template_path="$1"
-    local rendered_path
-
-    if [[ ! -f "$template_path" ]]; then
-        echo -e "${RED}❌ Файл промпта не найден: $template_path${NC}" >&2
-        exit 1
-    fi
-    if ! command -v envsubst >/dev/null 2>&1; then
-        echo -e "${RED}❌ envsubst не найден. Установите gettext.${NC}" >&2
-        exit 1
-    fi
-
-    rendered_path="$(mktemp "${TMPDIR:-/tmp}/hh-reply-prompt.XXXXXX")"
-    envsubst '${HH_NAME} ${HH_TELEGRAM}' < "$template_path" > "$rendered_path"
-    printf '%s\n' "$rendered_path"
-}
-
-trap cleanup_rendered_files EXIT
-
-# Заголовок
-echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}       Итеративные AI-ответы работодателям${NC}"
-echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-echo ""
-echo -e "${YELLOW}Telegram для связи:${NC} $TELEGRAM"
-echo -e "${YELLOW}Максимум итераций:${NC} $MAX_ITERATIONS"
-echo -e "${YELLOW}Чатов за итерацию:${NC} $CHATS_PER_ITERATION"
-echo -e "${YELLOW}Промпт ответов:${NC} $REPLY_PROMPT_TEMPLATE"
-if [[ "$RUN_MODE" == "dry-run" ]]; then
-    echo -e "${YELLOW}Режим:${NC} ${RED}DRY-RUN (без отправки)${NC}"
-else
-    echo -e "${YELLOW}Режим:${NC} ${GREEN}LIVE (явно включён через --live)${NC}"
+if [[ ! "$MAX_CHATS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--chats must be a positive integer: $MAX_CHATS" >&2
+    exit 2
 fi
-echo ""
 
-echo -e "${CYAN}🔍 Проверка AI-конфига...${NC}"
-python3 "$SCRIPT_DIR/check_ai.py"
+if [[ ! -f "$REPLY_PROMPT_TEMPLATE" ]]; then
+    echo "Reply prompt not found: $REPLY_PROMPT_TEMPLATE" >&2
+    exit 1
+fi
+if ! command -v envsubst >/dev/null 2>&1; then
+    echo "envsubst is required (package gettext/gettext-base)" >&2
+    exit 1
+fi
 
-# Экспорт переменных для скрипта
-export TELEGRAM
-export HH_TELEGRAM="$TELEGRAM"
-export ITERATIONS="$MAX_ITERATIONS"
-export CHATS="$CHATS_PER_ITERATION"
-REPLY_SYSTEM_PROMPT_FILE="$(render_prompt_template "$REPLY_PROMPT_TEMPLATE")"
+REPLY_SYSTEM_PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/hh-reply-prompt.XXXXXX")"
+cleanup() {
+    rm -f "$REPLY_SYSTEM_PROMPT_FILE"
+}
+trap cleanup EXIT
+
+envsubst '${HH_NAME} ${HH_TELEGRAM}' < "$REPLY_PROMPT_TEMPLATE" > "$REPLY_SYSTEM_PROMPT_FILE"
 export REPLY_SYSTEM_PROMPT_FILE
 
-# Запуск скрипта
-echo -e "${GREEN}🚀 Запуск итеративных ответов...${NC}"
-echo ""
-
-REPLY_MODE_ARGS=()
 if [[ "$RUN_MODE" == "live" ]]; then
-    REPLY_MODE_ARGS+=(--live)
-else
-    REPLY_MODE_ARGS+=(--dry-run)
+    python3 "$SCRIPT_DIR/check_ai.py" --purpose reply ${PROFILE_ID:+--profile "$PROFILE_ID"}
 fi
-python3 "$SCRIPT_DIR/reply_iterative_ai.py" "${REPLY_MODE_ARGS[@]}"
 
-echo ""
-echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-if [[ "$RUN_MODE" == "dry-run" ]]; then
-    echo -e "${GREEN}✅ Dry-run завершён. Проверьте вывод выше.${NC}"
-    echo -e "${YELLOW}Для live запуска запустите: ${NC}./scripts/reply.sh --live"
+ARGS=(--max-chats "$MAX_CHATS")
+if [[ "$RUN_MODE" == "live" ]]; then
+    ARGS+=(--live)
 else
-    echo -e "${GREEN}✅ Ответы завершены!${NC}"
+    ARGS+=(--dry-run)
 fi
-echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+if [[ -n "$PROFILE_ID" ]]; then
+    ARGS+=(--profile "$PROFILE_ID")
+fi
+
+exec python3 "$SCRIPT_DIR/reply_iterative_ai.py" "${ARGS[@]}"

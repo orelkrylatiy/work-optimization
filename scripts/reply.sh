@@ -39,9 +39,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --iterations)
-            # Kept only for compatibility with old invocations. The new worker
-            # handles one bounded snapshot per cron run instead of sleeping in
-            # a long multi-iteration process.
             [[ $# -ge 2 ]] || { echo "--iterations requires a value" >&2; exit 2; }
             echo "Warning: --iterations is deprecated and ignored; use hourly cron instead." >&2
             shift 2
@@ -99,7 +96,11 @@ envsubst '${HH_NAME} ${HH_TELEGRAM}' < "$REPLY_PROMPT_TEMPLATE" > "$REPLY_SYSTEM
 export REPLY_SYSTEM_PROMPT_FILE
 
 if [[ "$RUN_MODE" == "live" ]]; then
-    python3 "$SCRIPT_DIR/check_ai.py" --purpose reply ${PROFILE_ID:+--profile "$PROFILE_ID"}
+    CHECK_ARGS=(--purpose reply)
+    if [[ -n "$PROFILE_ID" ]]; then
+        CHECK_ARGS+=(--profile "$PROFILE_ID")
+    fi
+    python3 "$SCRIPT_DIR/check_ai.py" "${CHECK_ARGS[@]}"
 fi
 
 ARGS=(--max-chats "$MAX_CHATS")

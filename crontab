@@ -1,32 +1,25 @@
 # shellcheck disable=all
-PATH=/home/docker/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 SHELL=/bin/bash
 
-# При старте системы/контейнера
-@reboot /bin/bash /app/startup.sh >> /var/log/cron.log 2>&1
+# All jobs are gated by HH_AUTOMATION_MODE in /app/.env:
+#   off      - do nothing (default)
+#   dry-run  - inspect only
+#   live     - perform external writes
+# Times below use the container/server timezone (set TZ in .env/compose).
 
-# Подъем резюме (раз в 4 часа)
-# Символ процента в кронтабе нужно экранировать
-# sleep с рандомной задержкой от 1 до 5 минут нужен во-первых чтобы токен обновиться успел, а во
-# вторых, чтобы антиспам не сработал
-# Resume publication is intentionally disabled by default. Enable only after
-# an operator has reviewed the account and explicitly chooses `update --live`.
-#0 */5 * * * /bin/bash -c 'sleep $((60 + RANDOM \% 241))' && cd /app && /bin/bash /app/scripts/all-profiles.sh update --live >> /var/log/cron.log 2>&1
+@reboot cd /app && /bin/bash /app/startup.sh >> /var/log/cron.log 2>&1
 
-# Рассылаем отклики с AI-письмами
-10 8-21 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh apply --dry-run >> /var/log/cron.log 2>&1
+# Refresh resume visibility shortly before the daily application batch.
+0 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh boost >> /var/log/cron.log 2>&1
 
-# Итеративные AI-ответы работодателям (каждые 2 часа)
-25 9-21/2 * * * cd /app && /bin/bash /app/scripts/all-profiles.sh reply --dry-run >> /var/log/cron.log 2>&1
+# One daily application batch. apply.sh keeps scanning until APPLY_LIMIT
+# successful responses or until APPLY_PAGES are exhausted.
+10 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh apply >> /var/log/cron.log 2>&1
 
-# Тест: каждые 5 минут (задержка до 1 минуты, чтобы не накладывались)
-#*/5 * * * * /bin/bash -c 'sleep $((1 + RANDOM \% 59))' && /usr/local/bin/python -m hh_applicant_tool apply-vacancies >> /var/log/cron.log 2>&1
+# Poll chats hourly through the current /common/chats API. Each employer turn
+# has a deterministic idempotency key, so retries cannot create duplicate sends.
+25 9-21 * * * cd /app && /bin/bash /app/scripts/cron-job.sh reply >> /var/log/cron.log 2>&1
 
-# Пытаемся обновить токен каждые 5 минут. В этом нет необходимости, можно закомментировать, так как
-# токен обновляется автоматически при любом запросе
-2-57/5 * * * * cd /app && /bin/bash /app/scripts/all-profiles.sh refresh >> /var/log/cron.log 2>&1
-
-# Раскомментируй, если хочешь удалять чаты с отказами
-#0 */1 * * * /bin/bash -c 'sleep $((60 + RANDOM \% 241))' && /usr/local/bin/python -m hh-applicant-tool clear-negotiations -d >> /var/log/cron.log 2>&1
-
-#*/1 * * * * echo "Cron is alive at $(date)" >> /var/log/cron.log 2>&1
+# No separate refresh-token cron is needed: ApiClient refreshes access tokens
+# on authenticated requests and persists the updated token after the command.

@@ -146,7 +146,7 @@ fi
 
 echo "HH apply: mode=$RUN_MODE query='$SEARCH_QUERY' max_responses=$MAX_RESPONSES scan=$TOTAL_PAGES*$PER_PAGE"
 
-exec "${HH_CMD[@]}" apply-vacancies \
+"${HH_CMD[@]}" apply-vacancies \
     --search "$SEARCH_QUERY" \
     --ai \
     --system-prompt "$RENDERED_SYSTEM_PROMPT" \

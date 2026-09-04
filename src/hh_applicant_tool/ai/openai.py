@@ -58,11 +58,7 @@ class ChatOpenAI:
         """Выполняет POST-запрос с соблюдением минимального интервала между запросами."""
         with self._lock:
             if self._previous_request_time > 0:
-                delay = (
-                    self._min_request_interval
-                    - time.monotonic()
-                    + self._previous_request_time
-                )
+                delay = self._min_request_interval - time.monotonic() + self._previous_request_time
                 if delay > 0:
                     logger.debug("Wait %.2fs before OpenAI request", delay)
                     time.sleep(delay)
@@ -211,9 +207,7 @@ class ChatOpenAI:
                     "content": [
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_base64}"
-                            },
+                            "image_url": {"url": f"data:image/png;base64,{image_base64}"},
                         },
                         {
                             "type": "text",

@@ -109,29 +109,27 @@ class Operation(BaseOperation):
         self.tool = tool
         self.api_client = tool.api_client
         self.resume_id = args.resume_id
-        self.reply_message = args.reply_message or tool.config.get(
-            "reply_message"
-        )
+        self.reply_message = args.reply_message or tool.config.get("reply_message")
         self.max_pages = args.max_pages
         self.dry_run = args.dry_run
         self.only_invitations = args.only_invitations
-        self.json_output = getattr(args, 'json_output', False)
+        self.json_output = getattr(args, "json_output", False)
 
-        # Промпты можно задать как инлайн-строкой, так и путём к файлу (@file или путь)
         self.message_prompt = load_prompt(args.message_prompt)
-        # Используем get_reply_ai, который читает секцию openai_reply (или fallback на openai_cover_letter)
-        self.reply_ai = (
-            tool.get_reply_ai(load_prompt(args.system_prompt))
-            if args.use_ai
-            else None
-        )
-        # Fallback: если openai_reply не настроен, пробуем openai_cover_letter
-        if self.reply_ai is None and args.use_ai:
+        self.reply_ai = None
+        if args.use_ai:
+            system_prompt = load_prompt(args.system_prompt)
             try:
-                self.reply_ai = tool.get_cover_letter_ai(load_prompt(args.system_prompt))
+                self.reply_ai = tool.get_reply_ai(system_prompt)
             except ValueError:
-                pass
-        # Предупреждение, если AI запрошен, но не настроен
+                logger.info(
+                    "openai_reply is not configured; trying openai_cover_letter fallback"
+                )
+                try:
+                    self.reply_ai = tool.get_cover_letter_ai(system_prompt)
+                except ValueError:
+                    pass
+
         if self.reply_ai is None and args.use_ai:
             logger.warning(
                 "AI запрошен (--use-ai), но ни 'openai_reply', ни 'openai_cover_letter' "
@@ -152,12 +150,10 @@ class Operation(BaseOperation):
             else resumes
         )
         resumes = list(
-            filter(
-                lambda resume: resume["status"]["id"] == "published", resumes
-            )
+            filter(lambda resume: resume["status"]["id"] == "published", resumes)
         )
         results = self._reply_chats(user=me, resumes=resumes, blacklist=blacklist)
-        
+
         if self.json_output:
             print(json.dumps(results, ensure_ascii=False, indent=2))
 
@@ -207,7 +203,7 @@ class Operation(BaseOperation):
             "sent": 0,
             "skipped": 0,
             "errors": [],
-            "messages": []
+            "messages": [],
         }
 
         base_placeholders = {
@@ -221,24 +217,17 @@ class Operation(BaseOperation):
             try:
                 results["processed"] += 1
 
-                # try:
-                #     self.tool.storage.negotiations.save(negotiation)
-                # except RepositoryError as e:
-                #     logger.exception(e)
-
-                # Пропуск переговоров без резюме (например, работодатель написал первым)
                 resume_data = negotiation.get("resume")
-                if not resume_data or not (resume := resume_map.get(resume_data.get("id"))):
+                if not resume_data or not (
+                    resume := resume_map.get(resume_data.get("id"))
+                ):
                     results["skipped"] += 1
                     continue
 
                 updated_at = parse_api_datetime(negotiation["updated_at"])
-
-                # Пропуск откликов, которые не обновлялись более N дней (при просмотре они обновляются вроде)
                 if (
                     self.period
-                    and (datetime.now(updated_at.tzinfo) - updated_at).days
-                    > self.period
+                    and (datetime.now(updated_at.tzinfo) - updated_at).days > self.period
                 ):
                     results["skipped"] += 1
                     continue
@@ -285,9 +274,7 @@ class Operation(BaseOperation):
                 while True:
                     messages_res: datatypes.PaginatedItems[
                         datatypes.Message
-                    ] = self.api_client.get(
-                        f"/negotiations/{nid}/messages", page=page
-                    )
+                    ] = self.api_client.get(f"/negotiations/{nid}/messages", page=page)
                     if not messages_res["items"]:
                         break
 
@@ -297,8 +284,7 @@ class Operation(BaseOperation):
                             continue
                         author = (
                             "Работодатель"
-                            if message["author"]["participant_type"]
-                            == "employer"
+                            if message["author"]["participant_type"] == "employer"
                             else "Я"
                         )
                         message_date = parse_api_datetime(
@@ -333,9 +319,7 @@ class Operation(BaseOperation):
                 if is_employer_message:
                     send_message = ""
                     if self.reply_message:
-                        send_message = (
-                            rand_text(self.reply_message) % placeholders
-                        )
+                        send_message = rand_text(self.reply_message) % placeholders
                         logger.debug(f"Template message: {send_message}")
                     elif self.reply_ai:
                         try:
@@ -344,30 +328,27 @@ class Operation(BaseOperation):
                                 resume_title=placeholders["resume_title"],
                                 message_history=message_history,
                             )
-                            send_message = self.reply_ai.complete(
-                                ai_query
-                            )
+                            send_message = self.reply_ai.complete(ai_query)
                             logger.debug(f"AI message: {send_message}")
-                            # Rate limiting: 1 second between AI requests
                             time.sleep(1.0)
                         except AIError as ex:
-                            logger.warning(
-                                f"Ошибка AI для чата {nid}: {ex}"
+                            logger.warning(f"Ошибка AI для чата {nid}: {ex}")
+                            results["errors"].append(
+                                {
+                                    "negotiation_id": nid,
+                                    "error": f"AI error: {ex}",
+                                }
                             )
-                            results["errors"].append({
-                                "negotiation_id": nid,
-                                "error": f"AI error: {ex}"
-                            })
                             continue
                     elif self.json_output:
-                        # JSON mode requires a reply_message or AI
-                        results["errors"].append({
-                            "negotiation_id": nid,
-                            "error": "No reply_message provided and AI not enabled"
-                        })
+                        results["errors"].append(
+                            {
+                                "negotiation_id": nid,
+                                "error": "No reply_message provided and AI not enabled",
+                            }
+                        )
                         continue
                     else:
-                        # Interactive mode (not JSON)
                         print("🏢", placeholders["employer_name"])
                         print("💼", placeholders["vacancy_name"])
                         if salary:
@@ -391,9 +372,7 @@ class Operation(BaseOperation):
                         try:
                             print("-" * 40)
                             print("Активное резюме:", resume.get("title") or "")
-                            print(
-                                "/ban, /cancel необязательное сообщение для отмены"
-                            )
+                            print("/ban, /cancel необязательное сообщение для отмены")
                             send_message = input("Ваше сообщение: ").strip()
                         except EOFError:
                             continue
@@ -412,11 +391,13 @@ class Operation(BaseOperation):
                                 "🚫 Работодатель заблокирован",
                                 employer.get("alternate_url"),
                             )
-                            results["messages"].append({
-                                "negotiation_id": nid,
-                                "action": "blacklisted",
-                                "employer_id": employer.get("id"),
-                            })
+                            results["messages"].append(
+                                {
+                                    "negotiation_id": nid,
+                                    "action": "blacklisted",
+                                    "employer_id": employer.get("id"),
+                                }
+                            )
                             continue
                         if send_message.startswith("/cancel"):
                             _, decline_msg = send_message.split("/cancel", 1)
@@ -425,29 +406,32 @@ class Operation(BaseOperation):
                                 with_decline_message=decline_msg.strip(),
                             )
                             print("❌ Отмена заявки", vacancy["alternate_url"])
-                            results["messages"].append({
-                                "negotiation_id": nid,
-                                "action": "cancelled",
-                                "decline_message": decline_msg.strip(),
-                            })
+                            results["messages"].append(
+                                {
+                                    "negotiation_id": nid,
+                                    "action": "cancelled",
+                                    "decline_message": decline_msg.strip(),
+                                }
+                            )
                             continue
 
-                    # Финальная отправка текста
                     if self.dry_run:
                         logger.debug(
                             "dry-run: отклик на %s: %s",
                             vacancy["alternate_url"],
                             send_message,
                         )
-                        results["messages"].append({
-                            "negotiation_id": nid,
-                            "vacancy_url": vacancy["alternate_url"],
-                            "vacancy_name": placeholders["vacancy_name"],
-                            "employer_name": placeholders["employer_name"],
-                            "message": send_message,
-                            "dry_run": True,
-                            "status": "skipped_dry_run"
-                        })
+                        results["messages"].append(
+                            {
+                                "negotiation_id": nid,
+                                "vacancy_url": vacancy["alternate_url"],
+                                "vacancy_name": placeholders["vacancy_name"],
+                                "employer_name": placeholders["employer_name"],
+                                "message": send_message,
+                                "dry_run": True,
+                                "status": "skipped_dry_run",
+                            }
+                        )
                         results["skipped"] += 1
                         continue
 
@@ -458,24 +442,28 @@ class Operation(BaseOperation):
                     )
                     if not self.json_output:
                         print(f"📨 Отправлено для {vacancy['alternate_url']}")
-                    results["messages"].append({
-                        "negotiation_id": nid,
-                        "vacancy_url": vacancy["alternate_url"],
-                        "vacancy_name": placeholders["vacancy_name"],
-                        "employer_name": placeholders["employer_name"],
-                        "message": send_message,
-                        "status": "sent"
-                    })
+                    results["messages"].append(
+                        {
+                            "negotiation_id": nid,
+                            "vacancy_url": vacancy["alternate_url"],
+                            "vacancy_name": placeholders["vacancy_name"],
+                            "employer_name": placeholders["employer_name"],
+                            "message": send_message,
+                            "status": "sent",
+                        }
+                    )
                     results["sent"] += 1
 
             except ApiError as ex:
                 logger.error(ex)
-                results["errors"].append({
-                    "negotiation_id": nid,
-                    "error": str(ex)
-                })
+                results["errors"].append(
+                    {
+                        "negotiation_id": nid,
+                        "error": str(ex),
+                    }
+                )
 
         if not self.json_output:
             print("📝 Сообщения разосланы!")
-        
+
         return results

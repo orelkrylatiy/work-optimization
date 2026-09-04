@@ -16,3 +16,4 @@ services:
       TERM: ${TERM:-xterm}
       TZ: ${TZ:-Europe/Moscow}
       HH_AUTOMATION_MODE: ${HH_AUTOMATION_MODE:-off}
+      HH_PROFILE_PARALLELISM: ${HH_PROFILE_PARALLELISM:-10}

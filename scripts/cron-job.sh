@@ -53,13 +53,13 @@ echo "$(date -Is) starting job=$JOB mode=$MODE"
 
 case "$JOB" in
     apply)
-        exec "$SCRIPT_DIR/all-profiles.sh" apply "$MODE_FLAG" \
+        "$SCRIPT_DIR/all-profiles.sh" apply "$MODE_FLAG" \
             --limit "${APPLY_LIMIT:-100}" \
             --pages "${APPLY_PAGES:-20}" \
             --per-page "${APPLY_PER_PAGE:-50}"
         ;;
     reply)
-        exec "$SCRIPT_DIR/all-profiles.sh" reply "$MODE_FLAG" \
+        "$SCRIPT_DIR/all-profiles.sh" reply "$MODE_FLAG" \
             --chats "${REPLY_CHATS:-100}"
         ;;
     boost)
@@ -67,6 +67,6 @@ case "$JOB" in
             echo "$(date -Is) boost skipped outside live mode"
             exit 0
         fi
-        exec "$SCRIPT_DIR/all-profiles.sh" boost --live
+        "$SCRIPT_DIR/all-profiles.sh" boost --live
         ;;
 esac

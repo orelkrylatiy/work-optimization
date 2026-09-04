@@ -362,9 +362,7 @@ def test_is_still_current_fails_closed_when_chat_changed() -> None:
     hh = Mock()
     hh.call_api.return_value = _detail(
         _message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00"),
-        _message(
-            "applicant-2", APPLICANT_ROLE, "Уже ответил вручную", "2026-01-01T10:01:00"
-        ),
+        _message("applicant-2", APPLICANT_ROLE, "Уже ответил вручную", "2026-01-01T10:01:00"),
     )
 
     assert _live_worker(hh=hh).is_still_current(_decision()) is False
@@ -432,9 +430,7 @@ def test_failed_send_returns_false_when_message_is_not_visible() -> None:
         ) -> dict[str, Any]:
             if method == "POST":
                 raise HHCLIError("network down")
-            return _detail(
-                _message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00")
-            )
+            return _detail(_message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00"))
 
     worker = _live_worker(hh=FakeHH(), send_retries=0)  # type: ignore[arg-type]
 
@@ -442,7 +438,9 @@ def test_failed_send_returns_false_when_message_is_not_visible() -> None:
 
 
 def test_run_dry_run_plans_without_revalidation_or_send() -> None:
-    worker = ReplyWorker(ReplyWorkerConfig(dry_run=True), hh=Mock(), ai=None, system_prompt="prompt")
+    worker = ReplyWorker(
+        ReplyWorkerConfig(dry_run=True), hh=Mock(), ai=None, system_prompt="prompt"
+    )
     worker.collect_candidate_chats = Mock(return_value=[{"id": "chat-1"}])
     worker.make_decision = Mock(return_value=_decision())
     worker.generate_reply = Mock(return_value="preview")

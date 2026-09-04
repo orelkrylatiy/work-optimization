@@ -1,13 +1,12 @@
 #!/bin/bash
-echo "[$(date)] Running startup tasks..."
+set -euo pipefail
 
-# echo "Current user: $(whoami)"
-# echo "$CONFIG_DIR"
+mkdir -p /app/logs /app/config
 
-# При рестарте только восстанавливаем сессии и обновляем резюме.
-# Live-отклики и ответы запускаются отдельными cron-задачами, чтобы рестарт
-# контейнера не создавал неожиданный повторный batch.
-/bin/bash /app/scripts/all-profiles.sh refresh
-/bin/bash /app/scripts/all-profiles.sh update
+echo "[$(date -Is)] work-optimization startup"
+echo "[$(date -Is)] scheduled HH actions are controlled by HH_AUTOMATION_MODE and cron"
 
-echo "[$(date)] Startup tasks finished."
+# Do not refresh tokens, publish resumes, apply, or reply on container restart.
+# The API client refreshes credentials on authenticated requests, and external
+# writes belong to the explicit scheduled jobs. This avoids duplicate batches
+# after an unexpected container restart.

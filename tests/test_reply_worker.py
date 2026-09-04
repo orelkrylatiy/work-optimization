@@ -11,8 +11,8 @@ from hh_applicant_tool.ai.openai import OpenAIError
 from hh_applicant_tool.automation.reply_worker import (
     APPLICANT_ROLE,
     EMPLOYER_ROLE,
-    MAX_REPLY_CHARS,
     HHCLI,
+    MAX_REPLY_CHARS,
     HHCLIError,
     ReplyDecision,
     ReplyWorker,

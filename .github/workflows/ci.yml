@@ -153,6 +153,24 @@ jobs:
           bash scripts/apply.sh --help >/dev/null
           bash scripts/reply.sh --help >/dev/null
           HH_AUTOMATION_MODE=off bash scripts/cron-job.sh apply >/dev/null
+      - name: Smoke-test ten concurrent profiles
+        run: |
+          fake_bin="$(mktemp -d)"
+          logs="$(mktemp -d)"
+          locks="$(mktemp -d)"
+          cat > "$fake_bin/hh-applicant-tool" <<'EOF'
+          #!/usr/bin/env bash
+          sleep 0.05
+          exit 0
+          EOF
+          chmod +x "$fake_bin/hh-applicant-tool"
+          PROFILES="account1 account2 account3 account4 account5 account6 account7 account8 account9 account10" \
+          HH_PROFILE_PARALLELISM=10 \
+          HH_PROFILES_LOG_DIR="$logs" \
+          HH_PROFILES_LOCK_DIR="$locks" \
+          PATH="$fake_bin:$PATH" \
+            bash scripts/all-profiles.sh refresh
+          test "$(find "$logs" -name '*-refresh.log' | wc -l)" -eq 10
 
   docker:
     name: Docker build

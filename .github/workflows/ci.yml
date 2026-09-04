@@ -114,6 +114,7 @@ jobs:
           shellcheck \
             scripts/apply.sh \
             scripts/reply.sh \
+            scripts/cron-job.sh \
             scripts/daily.sh \
             scripts/all-profiles.sh \
             scripts/setup-cron.sh \

@@ -1,76 +1,76 @@
-# HH Applicant Tool
+# Work Optimization / HH Applicant Tool
 
-Утилита для автоматизации работы с [HeadHunter](https://hh.ru): отклики на вакансии, обновление резюме, review переговоров и локальное хранение состояния.
+Automation worker для работы соискателя на HH.ru: поиск и фильтрация вакансий, ограниченные batch-отклики, AI-сопроводительные, безопасные автоответы работодателям, multi-profile, локальное состояние и cron/Docker deployment.
 
-## 🚀 Быстрый старт для агента
+Проект построен как детерминированный worker, а не как свободно действующий LLM-агент:
 
-**1. Проверка состояния:**
-```bash
-hh-applicant-tool whoami
-hh-applicant-tool list-resumes
+```text
+cron / manual command
+        ↓
+scripts/*.sh
+        ↓
+hh-applicant-tool CLI
+        ↓
+HH API + локальное состояние
+        ↓
+LLM только там, где нужен текст
 ```
 
-**2. Ежедневный workflow:**
-```bash
-# Поднять резюме
-hh-applicant-tool boost-resume
+Для ежедневного цикла MCP не требуется. Скрипты уже дают стабильную command surface для cron, CI и внешнего агента.
 
-# Отклики с AI-письмами: dry-run по умолчанию, live только явно
-./scripts/apply.sh
-./scripts/apply.sh --live
+## Что Автоматизировано
 
-# Ответы работодателям: dry-run по умолчанию, live только явно
-./scripts/reply.sh
-./scripts/reply.sh --live
+- отклики на вакансии через `apply-vacancies`;
+- AI-сопроводительные письма;
+- пропуск вакансий с тестовыми заданиями в autonomous path;
+- лимит именно по успешным откликам, а не по числу просмотренных вакансий;
+- автоответы через актуальный `/common/chats` API HH;
+- повторная проверка чата перед отправкой ответа;
+- idempotency key для защиты от дублей при retry;
+- multi-profile с bounded concurrency и per-profile locks;
+- ежедневный cron batch откликов и почасовые проверки чатов;
+- Docker + web admin panel;
+- SQLite/локальное состояние профилей;
+- blocking CI для нового automation layer, тесты, Ruff, formatter, basedpyright, ShellCheck и Docker build.
+
+## Безопасность Автономного Режима
+
+Все scheduled jobs выключены после установки:
+
+```dotenv
+HH_AUTOMATION_MODE=off
 ```
 
-**3. Локальные переменные для персонализации:**
-```bash
-HH_NAME=Максим
-HH_TELEGRAM=@maxxwway
+Режимы:
+
+```text
+off      cron ничего не делает
+dry-run  читает данные и строит preview без внешних действий
+live     разрешает реальные отклики, ответы и boost
 ```
 
-`apply.sh`, `reply.sh` и `daily.sh` автоматически подхватывают их из `.env` в корне.
+Не переключай в `live`, пока не прошли AI probe и ручные dry-run.
 
-**📚 Полная документация:** [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)
+## Быстрый Старт
 
----
-
-## Что Это
-
-Проект лучше воспринимать как `automation worker` для HH:
-
-- основная работа идёт через HH API и web endpoints;
-- локальное состояние хранится в `config.json`, `cookies.txt` и SQLite;
-- регулярные задачи можно запускать по cron;
-- AI и агентный контур здесь вспомогательные, а не основной источник действий.
-
-Это не browser-RPA и не “полностью автономный агент, который сам всё решает”.
-
-## Основные возможности
-
-- автоотклики через `apply-vacancies`
-- обновление резюме через `update-resumes`
-- review переписок и ручные/AI-ответы работодателям
-- AI-фильтрация вакансий и AI-генерация писем
-- локальная SQLite база
-- web admin panel
-- поддержка нескольких профилей
-- Docker для VPS
-
-## Быстрый старт
-
-### Локально
+Требуется Python 3.11+.
 
 ```bash
-# Python 3.11+
 python -m venv .venv
-. .venv/bin/activate
-pip install '.[playwright]'
-cp .env.example .env 2>/dev/null || touch .env
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e '.[playwright,pillow]'
+pip install -r admin/requirements.txt
+cp .env.example .env
 ```
 
-Проверка установки:
+Для browser-авторизации:
+
+```bash
+python -m playwright install chromium
+```
+
+Проверка CLI:
 
 ```bash
 hh-applicant-tool --help
@@ -78,440 +78,290 @@ hh-applicant-tool whoami
 hh-applicant-tool list-resumes
 ```
 
-Рабочие скрипты используют `.venv` в корне проекта и автоматически читают
-`.env`. Минимальная персонализация:
+Если аккаунт ещё не авторизован:
+
+```bash
+hh-applicant-tool --profile-id default authorize '<phone-or-email>'
+hh-applicant-tool --profile-id default whoami
+```
+
+Первичная авторизация может потребовать человека: код подтверждения и иногда капчу. После этого токены/cookies сохраняются в профиле.
+
+## Профили И Данные
+
+В директории каждого профиля находятся:
+
+- `config.json` — токены и настройки;
+- `data` — SQLite;
+- `cookies.txt` — web cookies;
+- `log.txt` — CLI log.
+
+Для нескольких аккаунтов создай `.profiles`:
+
+```text
+default
+account2
+```
+
+Проверка:
+
+```bash
+hh-applicant-tool --profile-id default whoami
+hh-applicant-tool --profile-id account2 whoami
+```
+
+Batch по всем профилям:
+
+```bash
+./scripts/all-profiles.sh apply --dry-run
+./scripts/all-profiles.sh reply --dry-run
+```
+
+Параллелизм ограничен:
 
 ```dotenv
-HH_NAME=Максим
-HH_TELEGRAM=@username
+HH_PROFILE_PARALLELISM=2
 ```
 
-Также в `config/config.json` должен быть настроен AI-провайдер для
-сопроводительных писем и автоответов. Проверить конфигурацию можно так:
+Это защищает HH и LLM provider от резкого умножения RPS при нескольких аккаунтах.
 
-```bash
-.venv/bin/python scripts/check_ai.py
+## AI Конфигурация
+
+Для live-откликов нужен `openai_cover_letter`. Для ответов используется:
+
+```text
+openai_reply -> openai_cover_letter -> STOP
 ```
 
-### Через Docker
+Пример `config.json` профиля:
+
+```json
+{
+  "openai_cover_letter": {
+    "api_key": "...",
+    "base_url": "https://api.openai.com/v1/chat/completions",
+    "model": "gpt-4o-mini",
+    "temperature": 0.35,
+    "timeout": 45
+  },
+  "openai_reply": {
+    "api_key": "...",
+    "base_url": "https://api.openai.com/v1/chat/completions",
+    "model": "gpt-4o-mini",
+    "temperature": 0.35,
+    "timeout": 45
+  }
+}
+```
+
+Подойдёт любой OpenAI-compatible provider, включая OpenRouter и OpenAI-compatible режим Ollama.
+
+Static preflight:
 
 ```bash
-git clone https://github.com/s3rgeym/hh-applicant-tool
-cd hh-applicant-tool
+python scripts/check_ai.py --purpose cover-letter --profile default
+python scripts/check_ai.py --purpose reply --profile default
+```
+
+Реальный model probe:
+
+```bash
+python scripts/check_ai.py --purpose cover-letter --profile default --probe
+python scripts/check_ai.py --purpose reply --profile default --probe
+```
+
+Подробности: [docs/LLM_SETUP.md](docs/LLM_SETUP.md).
+
+## Отклики
+
+Preview:
+
+```bash
+./scripts/apply.sh \
+  --profile default \
+  --search 'React TypeScript developer' \
+  --limit 20 \
+  --pages 5 \
+  --dry-run
+```
+
+Live:
+
+```bash
+./scripts/apply.sh \
+  --profile default \
+  --search 'React TypeScript developer' \
+  --limit 20 \
+  --pages 5 \
+  --live
+```
+
+Ключевое различие:
+
+- `--limit` — максимум **успешных** откликов;
+- `--pages × --per-page` — максимальная глубина сканирования.
+
+Поэтому worker может пройти значительно больше 20 вакансий, чтобы реально набрать 20 подходящих откликов после фильтрации и пропуска уже обработанных вакансий.
+
+По умолчанию autonomous path использует `--skip-tests`: бот не должен угадывать ответы на тестовые задания.
+
+Весь batch дополнительно ограничен `APPLY_RUN_TIMEOUT` (default 3600 секунд), чтобы зависший legacy HTML-request не удержал scheduled lock навсегда.
+
+## Автоответы В Чатах
+
+Preview без отправки и без вызова LLM:
+
+```bash
+./scripts/reply.sh --profile default --chats 20 --dry-run
+```
+
+Live:
+
+```bash
+./scripts/reply.sh --profile default --chats 20 --live
+```
+
+Worker использует current common-chat flow:
+
+```text
+GET /common/chats
+GET /common/chats/{chat_id}/messages
+LLM generation
+GET /common/chats/{chat_id}/messages   # revalidate
+POST /common/chats/{chat_id}/messages  # idempotent
+```
+
+Ответ отправляется только когда:
+
+- чат относится к negotiation;
+- чат не заблокирован;
+- HH разрешает запись;
+- последнее сообщение от работодателя;
+- за время генерации последнее сообщение не изменилось.
+
+Если человек ответил вручную или работодатель прислал ещё одно сообщение, старый AI-ответ не отправляется.
+
+Каждый employer turn получает deterministic UUID `idempotency_key`. Retry использует тот же ключ; дополнительно worker перечитывает чат после сомнительного POST, чтобы не отправить дубль при потерянном HTTP-ответе.
+
+## Humanizer
+
+Шаблоны:
+
+- `prompts/cover_letter_frontend.txt`;
+- `prompts/reply_employer.txt`.
+
+Они запрещают длинные тире, placeholder'ы, канцелярит, типовые AI-клише и слишком гладкий рекламный стиль. Для autonomous replies действует ещё runtime validator: плохой ответ отклоняется, модель получает одну попытку исправления, после повторной неудачи сообщение пропускается.
+
+Telegram не дописывается программно в каждый ответ. Он используется только когда это уместно по истории диалога.
+
+## Расписание
+
+Container `crontab` по умолчанию:
+
+| Время | Действие |
+|---|---|
+| 09:00 | boost резюме, только `live` |
+| 09:10 | один application batch |
+| каждый час 09:25–21:25 | один bounded pass по чатам |
+
+Время берётся из timezone контейнера/сервера (`TZ`).
+
+Пример `.env`:
+
+```dotenv
+TZ=Europe/Moscow
+HH_AUTOMATION_MODE=dry-run
+SEARCH_QUERY=Frontend разработчик
+APPLY_LIMIT=100
+APPLY_PER_PAGE=50
+APPLY_PAGES=20
+APPLY_RUN_TIMEOUT=3600
+REPLY_CHATS=100
+HH_PROFILE_PARALLELISM=2
+```
+
+После проверки:
+
+```dotenv
+HH_AUTOMATION_MODE=live
+```
+
+Для установки аналогичного cron вне Docker:
+
+```bash
+./scripts/setup-cron.sh
+```
+
+## Docker
+
+```bash
 docker compose build
 docker compose up -d
 docker compose logs -f
 ```
 
-## Где Хранятся Данные
-
-В директории профиля:
-
-- `config.json` — токены и настройки
-- `data` — SQLite база
-- `cookies.txt` — cookies
-- `log.txt` — логи
-
-В Docker-сценарии по умолчанию это `config/` проекта, смонтированная в `/app/config`.
-
-## Несколько HH-аккаунтов
-
-Каждый аккаунт хранится в отдельном профиле внутри общей директории
-`config/`. Имя профиля передаётся глобальным флагом `--profile-id` или через
-`HH_PROFILE_ID`.
-
-Авторизация первого аккаунта:
-
-```bash
-.venv/bin/hh-applicant-tool --profile-id default authorize '+7XXXXXXXXXX'
-.venv/bin/hh-applicant-tool --profile-id default whoami
-```
-
-Добавление следующего аккаунта:
-
-```bash
-.venv/bin/hh-applicant-tool --profile-id account2 authorize '+7YYYYYYYYYY'
-.venv/bin/hh-applicant-tool --profile-id account2 whoami
-```
-
-После успешной авторизации создай `.profiles` в корне проекта — по одному
-профилю на строку:
+Admin panel публикуется только на localhost:
 
 ```text
-default
-account2
-# комментарии и пустые строки разрешены
+127.0.0.1:8000
 ```
 
-Проверка каждого аккаунта отдельно:
+Если нужен внешний доступ, лучше проксировать через HTTPS и обязательно настроить:
 
-```bash
-.venv/bin/hh-applicant-tool --profile-id default list-resumes
-.venv/bin/hh-applicant-tool --profile-id account2 list-resumes
-./scripts/apply.sh --profile account2 --dry-run
-./scripts/reply.sh --profile account2 --dry-run
-./scripts/all-profiles.sh reply
-./scripts/all-profiles.sh apply
-./scripts/all-profiles.sh daily
-./scripts/all-profiles.sh apply --live
+```dotenv
+ADMIN_USERNAME=...
+ADMIN_PASSWORD=...
 ```
 
-Параллельный запуск по всем профилям из `.profiles`:
+## Ручной One-shot Workflow
 
 ```bash
-./scripts/all-profiles.sh boost
-./scripts/all-profiles.sh apply --dry-run
-./scripts/all-profiles.sh apply
-./scripts/all-profiles.sh reply --dry-run
-./scripts/all-profiles.sh reply
-./scripts/all-profiles.sh cleanup
-./scripts/all-profiles.sh daily --dry-run
-./scripts/all-profiles.sh daily
-```
-
-`all-profiles.sh` запускает аккаунты параллельно, но не запускает две операции
-одновременно для одного профиля. Для этого используются lock-директории в
-`/tmp/hh-profile-locks`. Без `.profiles` работает только профиль `default`.
-Логи отдельных запусков находятся в
-`/tmp/hh-profiles/<profile>-<command>.log`.
-
-Чтобы временно задать список без файла:
-
-```bash
-PROFILES="default account2" ./scripts/all-profiles.sh reply --dry-run
-```
-
-Не копируй токены и cookies между профилями: у каждого аккаунта должна быть
-своя авторизация и своё состояние.
-
-## Автоотклики
-
-Безопасная последовательность для одного профиля:
-
-```bash
-./scripts/apply.sh --profile default --dry-run
-./scripts/apply.sh --profile default
-```
-
-Для всех аккаунтов:
-
-```bash
-./scripts/all-profiles.sh apply --dry-run
-./scripts/all-profiles.sh apply
-```
-
-По умолчанию `apply.sh` проходит несколько frontend-запросов, использует
-AI-сопроводительное письмо, пропускает вакансии с тестовыми заданиями и
-исключает нежелательные направления регулярным выражением. Полезные параметры:
-
-```bash
-./scripts/apply.sh \
-  --profile default \
-  --search "React TypeScript developer" \
-  --limit 50 \
-  --dry-run
-```
-
-- `--search` заменяет набор стандартных запросов одним указанным запросом;
-- `--limit` задаёт размер обрабатываемой выдачи на запрос, а не гарантированное
-  число отправленных откликов;
-- `--excluded-filter` переопределяет regex исключений;
-- без `--dry-run` отклики отправляются реально.
-
-## Автоответы работодателям
-
-`reply.sh` обрабатывает входящие чаты итерациями, генерирует ответ через AI и
-учитывает историю переписки. Контактные данные подставляются в промпт из
-`HH_NAME` и `HH_TELEGRAM`.
-
-Сначала всегда запускай проверку без отправки:
-
-```bash
-./scripts/reply.sh --profile default --dry-run
-./scripts/reply.sh --profile default --iterations 3 --chats 20 --dry-run
-```
-
-Live-запуск:
-
-```bash
-./scripts/reply.sh --profile default
-./scripts/all-profiles.sh reply
-```
-
-Параметры:
-
-- `--iterations N` — максимум проходов по входящим чатам;
-- `--chats N` — максимум чатов за один проход;
-- `--telegram @username` — контакт для текущего запуска;
-- `--dry-run` — сформировать решения, но ничего не отправлять.
-
-Состояние обработанных диалогов хранится отдельно по профилям в
-`config/reply-state/<profile>.json`. Перед ответами `daily.sh` запускает
-`cleanup.sh`, который скрывает отказы из активных переговоров; он не добавляет
-работодателей в blacklist.
-
-## Полный ежедневный цикл
-
-```bash
-# Один аккаунт
+# Полный preview
 ./scripts/daily.sh --profile default --dry-run
-./scripts/daily.sh --profile default
 
-# Все аккаунты
-./scripts/all-profiles.sh daily --dry-run
-./scripts/all-profiles.sh daily
+# Один live pass: apply + reply
+./scripts/daily.sh --profile default --live
+
+# Только отклики
+./scripts/daily.sh --profile default --apply-only --dry-run
+
+# Только чаты
+./scripts/daily.sh --profile default --reply-only --dry-run
+
+# Boost не выполняется автоматически этим one-shot без отдельного подтверждения
+./scripts/daily.sh --profile default --live --with-boost
 ```
 
-Полный цикл выполняет четыре шага:
+Scheduled production path использует не `daily.sh`, а отдельные `cron-job.sh apply/reply/boost`, чтобы падение одного типа работы не смешивалось с другим.
 
-1. поднимает резюме;
-2. отправляет отклики;
-3. убирает отказы из активных чатов;
-4. отвечает работодателям.
+## Проверки Разработки
 
-Дополнительные режимы: `--apply-only`, `--reply-only`, `--full` (сначала
-dry-run откликов, затем live).
-
-## Автозапуск: PM2 и cron
-
-На сервере используется PM2 с расписанием из `ecosystem.config.cjs`. Все часы
-указаны в UTC, только по будням:
-
-| Задача | UTC | Команда |
-|---|---:|---|
-| Подъём резюме | 05:00 | `all-profiles.sh boost` |
-| Первая волна откликов | 05:15 | `all-profiles.sh apply` |
-| Проверка и ответы | каждый час 06:00–13:00 | `all-profiles.sh reply` |
-| Очистка отказов | 14:15 | `all-profiles.sh cleanup` |
-
-Установка или обновление расписания:
+Blocking CI проверяет новый automation layer и весь test suite. Локально:
 
 ```bash
-mkdir -p logs
-pm2 startOrReload ecosystem.config.cjs
-pm2 save
-pm2 list
+pytest tests/
+ruff check src/hh_applicant_tool/automation scripts/reply_iterative_ai.py scripts/check_ai.py
+ruff format --check src/hh_applicant_tool/automation scripts/reply_iterative_ai.py scripts/check_ai.py
+basedpyright src/hh_applicant_tool/automation
+shellcheck scripts/apply.sh scripts/reply.sh scripts/cron-job.sh scripts/daily.sh scripts/all-profiles.sh scripts/setup-cron.sh
 ```
 
-PM2 показывает cron-задачи как `stopped` между запусками — это нормально:
-`autorestart` отключён, процесс стартует только по расписанию. Первый
-регистрационный запуск также безопасен: `scripts/pm2-job.sh` проверяет текущий
-UTC-слот и вне расписания ничего не отправляет.
+Полный upstream код содержит legacy lint/type debt; CI отдельно показывает его как report-only, не маскируя ошибки в новом critical automation path.
 
-Полезная диагностика:
+## Что Не Делать Автономно
 
-```bash
-pm2 list
-pm2 describe hh-reply-hourly
-pm2 logs hh-apply --lines 100
-tail -n 100 logs/hh-reply-hourly.log
-tail -n 100 /tmp/hh-profiles/default-reply.log
-```
-
-Все cron-задачи используют общий `flock` в `config/pm2-hh.lock`: если
-предыдущая HH-операция ещё работает, новый слот пропускается, чтобы процессы
-не конфликтовали за одну сессию.
-
-Если PM2 не нужен, эквивалентный системный cron можно задать вручную:
-
-```cron
-0 5 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh boost
-15 5 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh apply
-0 6-13 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh reply
-15 14 * * 1-5 cd /path/to/work-optimization && ./scripts/all-profiles.sh cleanup
-```
-
-Не включай одновременно PM2 и системный cron с одинаковым расписанием — это
-создаст дублирующиеся попытки запуска.
-
-## Авторизация
-
-```bash
-hh-applicant-tool authorize '<email-or-phone>'
-hh-applicant-tool whoami
-```
-
-Для первого входа нужен человек: логин, код подтверждения, иногда капча. После этого токен и cookies сохраняются локально.
-
-## Безопасный Workflow
-
-Рекомендуемый контур:
-
-1. `authorize`
-2. `whoami`
-3. `list-resumes`
-4. `apply-vacancies --dry-run`
-5. проверить выдачу
-6. только потом live batch
-
-Пример safe dry-run:
-
-```bash
-./scripts/apply.sh --dry-run
-# или напрямую:
-hh-applicant-tool apply-vacancies \
-  --search "React frontend developer" \
-  --ai \
-  --system-prompt prompts/cover_letter_frontend.txt \
-  --force-message \
-  --skip-tests \
-  --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан' \
-  --dry-run
-```
-
-Live запуск только после просмотра dry-run:
-
-```bash
-./scripts/apply.sh
-# или напрямую:
-hh-applicant-tool apply-vacancies \
-  --search "React frontend developer" \
-  --ai \
-  --system-prompt prompts/cover_letter_frontend.txt \
-  --force-message \
-  --skip-tests \
-  --excluded-filter 'junior|стажировк|bitrix|web3|crypto|blockchain|open\s*space|опенспейс|хакатон|конкурс|тестов\w+ задан'
-```
-
-## Основные CLI Команды
-
-```bash
-hh-applicant-tool authorize
-hh-applicant-tool whoami
-hh-applicant-tool list-resumes
-hh-applicant-tool update-resumes
-hh-applicant-tool apply-vacancies --dry-run
-hh-applicant-tool reply-employers --dry-run
-hh-applicant-tool clear-negotiations --dry-run
-hh-applicant-tool config -p
-hh-applicant-tool log -f
-```
-
-## AI
-
-AI не обязателен и подключается отдельными секциями в `config.json`. Он нужен, если хочешь:
-
-- генерировать сопроводительные письма (`apply-vacancies --ai`);
-- генерировать персональные ответы работодателям (`reply-employers --use-ai`, инбокс админки);
-- фильтровать вакансии через AI;
-- распознавать капчу через vision-модель.
-
-Подойдёт любой OpenAI-совместимый endpoint: **OpenAI, OpenRouter, Ollama** и др.
-CLI и админка используют один и тот же клиент и одни и те же секции конфига.
-
-Минимальный пример (письма):
-
-```json
-{
-  "openai_cover_letter": {
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4o-mini"
-  }
-}
-```
-
-**📖 Полное руководство:** [docs/LLM_SETUP.md](docs/LLM_SETUP.md) — все секции
-(`openai_cover_letter`, `openai_vacancy_filter`, `openai_captcha`, `openai_reply`),
-провайдеры, локальный Ollama и troubleshooting.
-
-## Web Admin / Agent Layer
-
-Start the admin panel locally on loopback only:
-
-```bash
-CONFIG_DIR="$PWD/config" python -m uvicorn admin.app:app --host 127.0.0.1 --port 8000
-```
-
-Open `http://127.0.0.1:8000`. To require HTTP Basic authentication, set both
-credentials before starting it:
-
-```bash
-ADMIN_USERNAME=admin ADMIN_PASSWORD='use-a-long-random-password' \
-CONFIG_DIR="$PWD/config" python -m uvicorn admin.app:app --host 127.0.0.1 --port 8000
-```
-
-When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, every UI/API route
-except `/health` requires Basic Auth. When neither is set, the admin remains
-unauthenticated for deliberately local-only deployments. Do not bind an
-unauthenticated admin to a public interface. A configuration with only one of
-the two variables is rejected at startup/request time to prevent an accidental
-open deployment.
-
-Docker Compose does not publish port 8000 by default. If you deliberately
-expose the panel, use a loopback-only mapping and pass both credentials via a
-Compose override or service environment:
-
-```yaml
-services:
-  hh_applicant_tool:
-    ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      ADMIN_USERNAME: "${ADMIN_USERNAME}"
-      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
-```
-
-The container can listen on `0.0.0.0` internally; the host-side loopback
-mapping is what prevents public exposure.
-
-Полезные endpoint’ы:
-
-- `GET /api/agent/preflight`
-- `POST /api/agent/run`
-- `GET /api/agent/digest`
-- `GET /api/agent/review-negotiations`
-- `GET /api/inbox`
-- `GET /api/inbox/{neg_id}/messages`
-- `POST /api/inbox/{neg_id}/reply`
-
-Рекомендуемая модель:
-
-- cron запускает детерминированные команды;
-- агент читает digest и review endpoint’ы;
-- агент помогает с выбором search-контуров, разбором логов и follow-up;
-- агент не должен бесконтрольно слать всё подряд.
-
-### Dry-run and live actions
-
-`--dry-run` is a read/preview mode for application and reply workflows. It may
-read HH data and generate a preview, but it must not send an HH write, employer
-email, or chat message, and it must not persist application/reply state.
-
-In the admin, live applications, resume updates, batch replies, rejection
-clearing, and message sends require an explicit confirmation. Live applications
-also require one selected resume; external employer email needs a separate
-confirmation. `apply.sh`, `reply.sh`, and `daily.sh` are dry-run by default.
-`daily.sh --full --live` performs a preview before the explicitly requested
-live workflow. Resume publishing through `all-profiles.sh boost|update` also
-requires `--live`; unattended publishing is disabled in the shipped schedules.
-
-## Что Автоматизировать, А Что Нет
-
-Хорошо автоматизировать:
-
-- `refresh-token`
-- `update-resumes`
-- safe `apply-vacancies`
-
-Осторожно автоматизировать:
-
-- `reply-employers`
-- follow-up после тишины
-- новые search-контуры
-
-Не рекомендуется:
-
-- запускать новый поиск сразу в live;
-- давать агенту полный live-control без рамок;
-- полагаться только на AI-фильтр;
-- использовать слишком широкий `search`.
+- не включать решение vacancy tests;
+- не менять search/filters сразу в live без preview;
+- не запускать одновременно несколько scheduler'ов для одной установки;
+- не копировать token/cookies между профилями;
+- не обходить `HH_AUTOMATION_MODE` и locks внешним параллельным cron;
+- не выставлять admin panel в интернет без auth/TLS.
 
 ## Документация
 
-- [LLM Setup](docs/LLM_SETUP.md) — подключение AI
-- [Agent Guide](docs/AGENT_GUIDE.md)
-- [Autonomous Agent Workflow](docs/AUTONOMOUS_AGENT_WORKFLOW.md)
-- [Scheduling](docs/SCHEDULING.md) — автозапуск по cron
-- [Deployment](docs/DEPLOYMENT.md)
-- [Docs Index](docs/README.md)
+- [docs/AUTONOMOUS_AGENT_WORKFLOW.md](docs/AUTONOMOUS_AGENT_WORKFLOW.md) — production automation и safety model;
+- [docs/LLM_SETUP.md](docs/LLM_SETUP.md) — LLM config/fallbacks/probe;
+- [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — CLI и agent-oriented use cases;
+- [docs/SCHEDULING.md](docs/SCHEDULING.md) — дополнительные варианты запуска;
+- [docs/development/TESTING.md](docs/development/TESTING.md) — тестирование;
+- [docs/PRODUCTION_REVIEW_2026-09-04.md](docs/PRODUCTION_REVIEW_2026-09-04.md) — результаты hardening review.

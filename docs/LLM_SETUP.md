@@ -1,199 +1,165 @@
-# 🧠 Подключение LLM
+# Подключение LLM
 
-Этот документ описывает, **как подключить LLM** к проекту, **где она используется** и **какие провайдеры подходят**.
+LLM в этом проекте не управляет расписанием и не решает, какие команды запускать. Она получает уже подготовленный контекст и генерирует текст для конкретной операции.
 
-## Главная идея
+## Где Используется AI
 
-LLM здесь — это **чистая функция «контекст → текст»**, встроенная в детерминированный поток.
-Она не принимает решения «что запустить» — это делают cron и сам инструмент.
+| Задача | Конфиг | Runtime |
+|---|---|---|
+| сопроводительные письма | `openai_cover_letter` | `apply-vacancies --ai` / `scripts/apply.sh` |
+| ответы работодателям | `openai_reply`, fallback `openai_cover_letter` | `scripts/reply.sh` |
+| AI-фильтр вакансий | `openai_vacancy_filter` | `apply-vacancies --ai-filter ...` |
+| капча | `openai_captcha` | browser authorization / apply captcha flow |
 
-LLM нужна ровно для трёх вещей:
+Scheduled reply worker использует общий `ChatOpenAI`, то есть те же timeout, rate limit и transient retries, что и основной Python-код.
 
-| Что генерит | Где включается |
-|-------------|----------------|
-| 📝 Сопроводительные письма под вакансию | `apply-vacancies --ai` / админка `/api/generate-letter` |
-| 💬 Ответы работодателям в чате | `reply-employers --use-ai` / админка `/api/inbox/{id}/reply` |
-| 🔓 Распознавание капчи (vision) | автоматически при `authorize` / `apply-vacancies` |
+## Конфигурация
 
-AI **не обязателен**: без него инструмент работает на шаблонных письмах (`--letter-file`) и
-ручных ответах. AI включается только если настроены соответствующие секции конфига.
+`config.json` хранится отдельно для каждого профиля. В Docker базовая директория обычно `/app/config`.
 
----
+Минимальный пример:
 
-## Где живёт конфиг
-
-Ключи лежат в `config.json` внутри директории профиля
-(локально `~/.config/hh-applicant-tool/...`, в Docker — `config/config.json`).
-
-Открыть в редакторе:
-
-```bash
-hh-applicant-tool config -p          # путь к файлу
-hh-applicant-tool config             # открыть в $EDITOR
-```
-
-CLI и веб-админка теперь читают **одни и те же** секции и используют **один и тот же**
-клиент (`ChatOpenAI` с retry и rate-limit). Рассинхрона больше нет.
-
----
-
-## Секции конфига
-
-Любой OpenAI-совместимый endpoint. У каждой задачи — своя секция, чтобы можно было
-ставить разные модели (например, дешёвую для фильтра и капчи, поумнее — для писем).
-
-```jsonc
+```json
 {
-  // Сопроводительные письма (CLI apply-vacancies --ai и админка generate-letter)
   "openai_cover_letter": {
-    "api_key": "sk-...",
+    "api_key": "...",
     "base_url": "https://api.openai.com/v1/chat/completions",
     "model": "gpt-4o-mini",
-    "temperature": 0.7,
+    "temperature": 0.35,
     "max_completion_tokens": 600,
-    "rate_limit": 40
+    "rate_limit": 30,
+    "timeout": 45
   },
-
-  // AI-фильтр вакансий (CLI apply-vacancies --ai)
-  "openai_vacancy_filter": {
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4o-mini"
-  },
-
-  // Распознавание капчи — нужна vision-модель
-  "openai_captcha": {
-    "api_key": "sk-...",
-    "base_url": "https://api.openai.com/v1/chat/completions",
-    "model": "gpt-4o-mini"
-  },
-
-  // Ответы работодателям в чате (админка inbox). Необязательна:
-  // если её нет — используется openai_cover_letter.
   "openai_reply": {
-    "api_key": "sk-...",
+    "api_key": "...",
     "base_url": "https://api.openai.com/v1/chat/completions",
     "model": "gpt-4o-mini",
-    "temperature": 0.7
+    "temperature": 0.35,
+    "max_completion_tokens": 500,
+    "rate_limit": 30,
+    "timeout": 45,
+    "max_retries": 3
   }
 }
 ```
 
-### Поля секции
+`base_url` должен быть полным OpenAI-compatible chat-completions endpoint.
 
-| Поле | Обяз. | Описание |
-|------|:----:|----------|
-| `api_key` | ✅ | Ключ провайдера |
-| `base_url` | ✅ | Полный endpoint. Допускается короткий (`.../v1`) — админка сама допишет `/chat/completions`; для CLI указывайте полный URL |
-| `model` | ⚠️ | ID модели. Большинство провайдеров требуют |
-| `temperature` | — | По умолчанию `0.0` (CLI) / задаётся вызовом (админка) |
-| `max_completion_tokens` | — | Лимит ответа (по умолчанию 1000 в CLI) |
-| `rate_limit` | — | Запросов в минуту, `0` = выключено (по умолчанию 40) |
-| `proxy_url` | — | Отдельный прокси только для AI-запросов |
+## Fallback Для Ответов
 
-> **Обратная совместимость.** Если оставить одну старую секцию `openai`, и письма, и
-> ответы будут брать ключ из неё. Новые секции имеют приоритет.
+Порядок строго определён:
 
----
+```text
+openai_reply
+    ↓ если секции нет
+openai_cover_letter
+    ↓ если секции нет / она невалидна
+STOP
+```
 
-## Провайдеры
+Live reply-worker не подставляет скрытый default URL, model или API key. Это сделано специально: конфигурационная ошибка должна остановить отправку, а не переключить production worker на неожиданную модель.
 
-### OpenAI
+Для сопроводительных fallback на `openai_reply` нет: `scripts/apply.sh` требует `openai_cover_letter`.
+
+## Проверка Конфига
+
+Статическая проверка, без отправки данных модели:
+
+```bash
+python scripts/check_ai.py --purpose cover-letter
+python scripts/check_ai.py --purpose reply
+```
+
+Проверка конкретного профиля:
+
+```bash
+python scripts/check_ai.py --purpose reply --profile account2
+```
+
+Реальный probe одним коротким запросом:
+
+```bash
+python scripts/check_ai.py --purpose reply --probe
+```
+
+`--probe` удобно запускать вручную после изменения provider/model. Его не нужно выполнять каждый час из cron.
+
+## OpenAI / OpenRouter
+
+Пример OpenAI:
 
 ```json
-"base_url": "https://api.openai.com/v1/chat/completions",
-"model": "gpt-4o-mini"
+{
+  "api_key": "...",
+  "base_url": "https://api.openai.com/v1/chat/completions",
+  "model": "gpt-4o-mini"
+}
 ```
 
-### OpenRouter (много моделей за одним ключом)
+Пример OpenRouter:
 
 ```json
-"base_url": "https://openrouter.ai/api/v1/chat/completions",
-"model": "openai/gpt-4o-mini"
+{
+  "api_key": "...",
+  "base_url": "https://openrouter.ai/api/v1/chat/completions",
+  "model": "openai/gpt-4o-mini"
+}
 ```
 
-### Ollama (локально, бесплатно, без интернета)
+## Ollama
 
-**Важно:** Ollama поддерживает два режима API:
-
-1. **OpenAI-совместимый режим** (рекомендуется для этого проекта):
-   ```bash
-   ollama serve
-   ollama pull qwen2.5:7b
-   ```
-   ```json
-   "base_url": "http://localhost:11434/v1/chat/completions",
-   "model": "qwen2.5:7b",
-   "api_key": "ollama"
-   ```
-
-2. **Нативный режим Ollama** (альтернатива):
-   ```json
-   "base_url": "http://localhost:11434/api/generate",
-   "model": "qwen2.5:7b"
-   ```
-   ⚠️ Нативный режим требует изменения кода клиента — используйте OpenAI-совместимый режим.
-
-**Проверка работоспособности:**
-```bash
-# Убедитесь, что Ollama запущен
-ollama list
-
-# Проверьте, что модель установлена
-ollama ls | grep qwen2.5
-
-# Проверьте API endpoint
-curl http://localhost:11434/api/tags
-```
-
-**Troubleshooting 404 ошибок:**
-- Убедитесь, что модель установлена: `ollama pull qwen2.5:7b`
-- Проверьте, что Ollama сервер запущен: `ollama serve`
-- Используйте полный URL: `http://localhost:11434/v1/chat/completions` (не сокращённый)
-- Для капчи нужна vision-модель (напр. `llama3.2-vision`); иначе оставьте для капчи облачную модель, а письма/фильтр гоните локально.
-
-Подойдёт **любой** OpenAI-совместимый сервер (LM Studio, vLLM, llama.cpp `--api`, и т.д.).
-
----
-
-## Промпты (стиль писем и ответов)
-
-Системный промпт можно задать **строкой или файлом** — `--system-prompt` и `--prompt`
-понимают оба варианта (путь к файлу или `@file`):
+Проект ожидает OpenAI-compatible interface Ollama:
 
 ```bash
-# письмо: стиль из файла
-hh-applicant-tool apply-vacancies --ai --system-prompt prompts/cover_letter_frontend.txt ...
-
-# ответ работодателю: стиль из файла
-hh-applicant-tool reply-employers --use-ai --system-prompt prompts/reply_employer.txt ...
+ollama serve
+ollama pull qwen2.5:14b
 ```
 
-Готовые заготовки и шаблон под личные данные — в [../prompts/README.md](../prompts/README.md).
+```json
+{
+  "api_key": "ollama",
+  "base_url": "http://localhost:11434/v1/chat/completions",
+  "model": "qwen2.5:14b"
+}
+```
 
-## Проверка
+Нативный `/api/generate` имеет другой формат payload и для этого клиента не подходит.
+
+Если приложение работает в Docker, `localhost` внутри контейнера означает сам контейнер. Если Ollama запущена на host-машине, укажи сетевой адрес, доступный контейнеру, либо запусти провайдер в общей Docker network.
+
+## Промпты И Humanizer
+
+Основные шаблоны:
+
+- `prompts/cover_letter_frontend.txt`
+- `prompts/reply_employer.txt`
+
+Они запрещают длинные тире, placeholder'ы, канцелярит, типовые AI-переходы и излишне гладкий рекламный стиль.
+
+Для autonomous replies prompt не является единственной защитой. `src/hh_applicant_tool/automation/reply_worker.py` дополнительно валидирует полученный текст. Если ответ содержит длинное тире, placeholder или явное AI-клише, worker делает одну corrective generation. Вторая неудача означает `skip`, а не отправку плохого сообщения.
+
+Telegram больше не приписывается кодом в каждый ответ. Prompt разрешает его только когда это действительно следует из контекста.
+
+## Privacy Dry-run
+
+`reply.sh --dry-run` не отправляет историю переписки LLM-провайдеру. Он показывает deterministic preview и проверяет логику выбора чатов без утечки содержимого чатов внешней модели.
+
+Live mode, естественно, передаёт текст последних сообщений выбранному LLM provider для генерации ответа.
+
+## Диагностика
 
 ```bash
-# письма: dry-run покажет сгенерированный текст без отправки
-hh-applicant-tool apply-vacancies --ai --search "Frontend" --dry-run
+# AI config
+python scripts/check_ai.py --purpose reply
 
-# ответы в чате через админку
-curl -s -X POST http://127.0.0.1:8000/api/inbox/123/reply \
-  -H 'Content-Type: application/json' \
-  -d '{"use_ai": true, "vacancy_name": "React Dev", "employer_name": "Acme"}'
+# реальный provider probe
+python scripts/check_ai.py --purpose reply --probe
+
+# чат без отправки и без LLM
+./scripts/reply.sh --dry-run --chats 20
+
+# отклики без отправки (AI письмо генерируется)
+./scripts/apply.sh --dry-run --limit 10 --pages 2
 ```
 
----
-
-## Troubleshooting
-
-| Симптом | Причина / решение |
-|---------|-------------------|
-| `AI не настроен: добавьте секцию ...` | Нет секции или пустой `api_key` |
-| `Ошибка AI: ... 401` | Неверный `api_key` |
-| `Ошибка AI: ... rate limit` | Поднимите `rate_limit` ниже или подождите; клиент сам делает retry на 429 |
-| Письма пустые/обрезаны | Увеличьте `max_completion_tokens` |
-| Капча не решается | Нужна **vision**-модель в `openai_captcha` |
-| Долгие ответы / таймаут | Локальная модель слишком тяжёлая — возьмите модель полегче |
-
-См. также: [README — раздел AI](../README.md#ai) и [AGENT_GUIDE](AGENT_GUIDE.md).
+Если provider возвращает 429/5xx или возникает временная сетевая ошибка, `ChatOpenAI` делает ограниченные retries. Если retries исчерпаны, worker пропускает действие и завершает run с ошибкой; он не отправляет универсальную заготовку вместо AI-ответа.

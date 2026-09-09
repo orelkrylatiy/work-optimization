@@ -74,10 +74,14 @@ class HHCLI:
         *,
         method: str = "GET",
         json_data: dict[str, Any] | None = None,
+        form_params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         command = [*self._base_command(), "call-api", endpoint]
         if method != "GET":
             command.extend(["--method", method])
+        if form_params is not None:
+            # call-api без --data шлёт PARAM=VALUE как form-encoded тело
+            command.extend(f"{key}={value}" for key, value in form_params.items())
         if json_data is not None:
             command.extend(
                 ["--data", json.dumps(json_data, ensure_ascii=False, separators=(",", ":"))]
@@ -149,15 +153,21 @@ def load_json_config(path: Path) -> dict[str, Any]:
 def message_role(message: dict[str, Any]) -> str:
     sender = message.get("sender_display_info")
     if not isinstance(sender, dict):
+        author = message.get("author")
+        if isinstance(author, dict):
+            participant = str(author.get("participant_type") or "").upper()
+            return participant if participant in ("EMPLOYER", "APPLICANT") else ""
         return ""
     return str(sender.get("role") or "").upper()
 
 
 def message_text(message: dict[str, Any]) -> str:
     payload = message.get("payload")
-    if not isinstance(payload, dict):
-        return ""
-    return str(payload.get("text") or "").strip()
+    if isinstance(payload, dict):
+        text = str(payload.get("text") or "").strip()
+        if text:
+            return text
+    return str(message.get("text") or "").strip()
 
 
 def message_id(message: dict[str, Any]) -> str:
@@ -232,24 +242,40 @@ class ReplyWorker:
         self.system_prompt = system_prompt
 
     def collect_candidate_chats(self) -> list[dict[str, Any]]:
+        """Collect chats via /negotiations (/common/chats is forbidden for API tokens)."""
         chats: list[dict[str, Any]] = []
         page = 0
         per_page = min(max(self.config.max_chats, 1), 100)
         while len(chats) < self.config.max_chats:
-            payload = self.hh.call_api(f"/common/chats?page={page}&per_page={per_page}")
+            payload = self.hh.call_api(f"/negotiations?page={page}&per_page={per_page}")
             items = payload.get("items")
             if not isinstance(items, list) or not items:
                 break
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if item.get("type") != "NEGOTIATION":
+                state = item.get("state")
+                if isinstance(state, dict) and state.get("id") == "discard":
                     continue
-                if item.get("block_reason"):
+                # /negotiations exposes messaging_status: only "ok" chats accept
+                # POST /negotiations/{id}/messages (no_invitation/disabled_by_employer
+                # are rejected server-side; skip them before burning AI/API calls).
+                messaging_status = str(item.get("messaging_status") or "")
+                if messaging_status and messaging_status != "ok":
                     continue
-                last_message = item.get("last_message")
-                if not isinstance(last_message, dict):
+                negotiation_id = str(item.get("id") or "")
+                if not negotiation_id:
                     continue
+                try:
+                    messages = self._negotiation_messages(negotiation_id)
+                except HHCLIError as exc:
+                    logger.warning(
+                        "Could not load messages for negotiation %s: %s", negotiation_id, exc
+                    )
+                    continue
+                if not messages:
+                    continue
+                last_message = sorted_messages(messages)[-1]
                 if message_role(last_message) != EMPLOYER_ROLE:
                     continue
                 chats.append(item)
@@ -261,8 +287,23 @@ class ReplyWorker:
             page += 1
         return chats
 
+    def _negotiation_messages(self, negotiation_id: str) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        page = 0
+        while page < 10:
+            payload = self.hh.call_api(f"/negotiations/{negotiation_id}/messages?page={page}")
+            items = payload.get("items")
+            if not isinstance(items, list) or not items:
+                break
+            messages.extend(item for item in items if isinstance(item, dict))
+            pages = int(payload.get("pages") or 0)
+            if not pages or page + 1 >= pages:
+                break
+            page += 1
+        return messages
+
     def _chat_detail(self, chat_id: str) -> dict[str, Any]:
-        return self.hh.call_api(f"/common/chats/{chat_id}/messages?order=prev&limit=50")
+        return {"messages": self._negotiation_messages(chat_id)}
 
     @staticmethod
     def _latest_message(detail: dict[str, Any]) -> dict[str, Any] | None:
@@ -277,9 +318,19 @@ class ReplyWorker:
     def _write_allowed(detail: dict[str, Any]) -> bool:
         states = detail.get("chat_states")
         if not isinstance(states, dict):
-            return False
+            return True
         write_state = states.get("write_message_state")
-        return isinstance(write_state, dict) and write_state.get("allowed") is True
+        if not isinstance(write_state, dict):
+            return True
+        return write_state.get("allowed") is not False
+
+    def _vacancy_info(self, chat: dict[str, Any]) -> tuple[str, str]:
+        vacancy = chat.get("vacancy")
+        if isinstance(vacancy, dict):
+            employer = vacancy.get("employer")
+            employer_name = str(employer.get("name") or "") if isinstance(employer, dict) else ""
+            return str(vacancy.get("name") or "вакансия"), employer_name
+        return self._vacancy_context({})
 
     def _vacancy_context(self, detail: dict[str, Any]) -> tuple[str, str]:
         display = detail.get("display")
@@ -324,7 +375,7 @@ class ReplyWorker:
         context, initiated_by_us = build_context(messages)
         if not context:
             return None
-        vacancy_name, employer_name = self._vacancy_context(detail)
+        vacancy_name, employer_name = self._vacancy_info(chat)
         return ReplyDecision(
             chat_id=chat_id,
             expected_last_message_id=latest_id,
@@ -410,9 +461,9 @@ class ReplyWorker:
         for attempt in range(self.config.send_retries + 1):
             try:
                 self.hh.call_api(
-                    f"/common/chats/{decision.chat_id}/messages",
+                    f"/negotiations/{decision.chat_id}/messages",
                     method="POST",
-                    json_data=payload,
+                    form_params={"message": text},
                 )
                 return True
             except HHCLIError as exc:

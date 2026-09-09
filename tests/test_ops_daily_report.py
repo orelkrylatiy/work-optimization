@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import pathlib
 import sqlite3
 import subprocess
 import sys
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ops" / "daily_report.py"
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "ops" / "daily_report.py"
 
 
-def _run_report(root: Path, date: str = "2026-09-09") -> dict:
+def _run_report(root: pathlib.Path, date: str = "2026-09-09") -> dict:
     output_dir = root / "ops"
     env = os.environ.copy()
     env["CONFIG_DIR"] = str(root / "config")
@@ -42,7 +42,7 @@ def _run_report(root: Path, date: str = "2026-09-09") -> dict:
     return json.loads(report_path.read_text(encoding="utf-8"))
 
 
-def _create_profile_db(path: Path) -> None:
+def _create_profile_db(path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
@@ -61,7 +61,9 @@ def _create_profile_db(path: Path) -> None:
         conn.close()
 
 
-def test_daily_report_collects_metrics_without_copying_raw_data(tmp_path: Path) -> None:
+def test_daily_report_collects_metrics_without_copying_raw_data(
+    tmp_path: pathlib.Path,
+) -> None:
     logs = tmp_path / "logs" / "profiles"
     logs.mkdir(parents=True)
 
@@ -150,7 +152,7 @@ def test_daily_report_collects_metrics_without_copying_raw_data(tmp_path: Path) 
     }
 
 
-def test_daily_report_handles_empty_runtime(tmp_path: Path) -> None:
+def test_daily_report_handles_empty_runtime(tmp_path: pathlib.Path) -> None:
     report = _run_report(tmp_path)
 
     assert report["profiles"] == {}

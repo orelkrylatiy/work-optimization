@@ -23,8 +23,7 @@ if [ -z "${PY:-}" ]; then
     exit 0
 fi
 
-REPORT="$("$PY" "$ROOT/scripts/ops/daily_report.py" --date today 2>/dev/null)"
-if [ $? -ne 0 ]; then
+if ! REPORT="$("$PY" "$ROOT/scripts/ops/daily_report.py" --date today 2>/dev/null)"; then
     echo "pre-commit: daily_report.py failed; committing without fresh ops snapshot" >&2
     exit 0
 fi

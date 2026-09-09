@@ -9,12 +9,14 @@ cron / manual command
         ↓
 scripts/*.sh
         ↓
-hh-applicant-tool CLI
+hh-applicant-tool CLI / ReplyWorker
         ↓
 HH API + локальное состояние
         ↓
 LLM только там, где нужен текст
 ```
+
+Подробная схема с Mermaid-диаграммами и привязкой к файлам кода: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Для ежедневного цикла MCP не требуется. Скрипты уже дают стабильную command surface для cron, CI и внешнего агента.
 
@@ -26,8 +28,9 @@ LLM только там, где нужен текст
 - лимит именно по успешным откликам, а не по числу просмотренных вакансий;
 - автоответы через актуальный `/common/chats` API HH;
 - повторная проверка чата перед отправкой ответа;
-- idempotency key для защиты от дублей при retry;
-- multi-profile с bounded concurrency и per-profile locks;
+- deterministic idempotency key для защиты от дублей при retry;
+- configurable runtime fallback-сообщение при недоступности LLM в reply path;
+- multi-profile с bounded concurrency до 10 профилей по умолчанию и per-profile locks;
 - ежедневный cron batch откликов и почасовые проверки чатов;
 - Docker + web admin panel;
 - SQLite/локальное состояние профилей;
@@ -117,21 +120,25 @@ Batch по всем профилям:
 ./scripts/all-profiles.sh reply --dry-run
 ```
 
-Параллелизм ограничен:
+Параллелизм ограничен и по умолчанию рассчитан на десять аккаунтов:
 
 ```dotenv
-HH_PROFILE_PARALLELISM=2
+HH_PROFILE_PARALLELISM=10
 ```
 
-Это защищает HH и LLM provider от резкого умножения RPS при нескольких аккаунтах.
+Для каждого профиля используется отдельный `flock`. Разные аккаунты могут работать параллельно; конфликтующая операция для уже занятого профиля будет skipped.
 
 ## AI Конфигурация
 
-Для live-откликов нужен `openai_cover_letter`. Для ответов используется:
+Для live-откликов нужен `openai_cover_letter`.
+
+Для reply provider selection порядок такой:
 
 ```text
-openai_reply -> openai_cover_letter -> STOP
+openai_reply -> openai_cover_letter -> configuration error / STOP
 ```
+
+После выбора provider есть отдельный runtime fallback: если `ChatOpenAI` исчерпал network/provider retries и бросил `OpenAIError`, `FallbackChatAI` может вернуть статическое `reply_fallback.message`. Это не fallback для содержательно плохого ответа модели: такой текст по-прежнему проходит humanizer и corrective generation.
 
 Пример `config.json` профиля:
 
@@ -149,7 +156,12 @@ openai_reply -> openai_cover_letter -> STOP
     "base_url": "https://api.openai.com/v1/chat/completions",
     "model": "gpt-4o-mini",
     "temperature": 0.35,
-    "timeout": 45
+    "timeout": 45,
+    "max_retries": 3
+  },
+  "reply_fallback": {
+    "enabled": true,
+    "message": "Здравствуйте! Спасибо за сообщение. Я разработчик, вакансия мне интересна. Готов обсудить задачи, формат работы и ответить на вопросы."
   }
 }
 ```
@@ -205,7 +217,9 @@ Live:
 
 По умолчанию autonomous path использует `--skip-tests`: бот не должен угадывать ответы на тестовые задания.
 
-Весь batch дополнительно ограничен `APPLY_RUN_TIMEOUT` (default 3600 секунд), чтобы зависший legacy HTML-request не удержал scheduled lock навсегда.
+Весь batch дополнительно ограничен `APPLY_RUN_TIMEOUT` (default 3600 секунд), чтобы зависший request не удерживал profile worker бесконечно.
+
+Для cover letters static fallback не используется: `AIError` пропускает конкретную vacancy и помечает run как неуспешный.
 
 ## Автоответы В Чатах
 
@@ -226,7 +240,8 @@ Worker использует current common-chat flow:
 ```text
 GET /common/chats
 GET /common/chats/{chat_id}/messages
-LLM generation
+LLM generation / runtime fallback
+humanizer
 GET /common/chats/{chat_id}/messages   # revalidate
 POST /common/chats/{chat_id}/messages  # idempotent
 ```
@@ -251,6 +266,8 @@ POST /common/chats/{chat_id}/messages  # idempotent
 - `prompts/reply_employer.txt`.
 
 Они запрещают длинные тире, placeholder'ы, канцелярит, типовые AI-клише и слишком гладкий рекламный стиль. Для autonomous replies действует ещё runtime validator: плохой ответ отклоняется, модель получает одну попытку исправления, после повторной неудачи сообщение пропускается.
+
+Static reply fallback проходит тот же runtime validator до отправки.
 
 Telegram не дописывается программно в каждый ответ. Он используется только когда это уместно по истории диалога.
 
@@ -277,7 +294,7 @@ APPLY_PER_PAGE=50
 APPLY_PAGES=20
 APPLY_RUN_TIMEOUT=3600
 REPLY_CHATS=100
-HH_PROFILE_PARALLELISM=2
+HH_PROFILE_PARALLELISM=10
 ```
 
 После проверки:
@@ -299,6 +316,8 @@ docker compose build
 docker compose up -d
 docker compose logs -f
 ```
+
+`docker-compose.yml` передаёт scheduler knobs в container environment. `container-entrypoint.sh` через `scripts/write-runtime-env.sh` сохраняет их в `/tmp/hh-runtime.env`, потому что cron запускается с урезанным environment. Поэтому кастомные `SEARCH_QUERY`, `APPLY_*`, `REPLY_CHATS` и `HH_PROFILE_PARALLELISM` работают и в scheduled jobs.
 
 Admin panel публикуется только на localhost:
 
@@ -343,8 +362,10 @@ pytest tests/
 ruff check src/hh_applicant_tool/automation scripts/reply_iterative_ai.py scripts/check_ai.py
 ruff format --check src/hh_applicant_tool/automation scripts/reply_iterative_ai.py scripts/check_ai.py
 basedpyright src/hh_applicant_tool/automation
-shellcheck scripts/apply.sh scripts/reply.sh scripts/cron-job.sh scripts/daily.sh scripts/all-profiles.sh scripts/setup-cron.sh
+shellcheck scripts/apply.sh scripts/reply.sh scripts/cron-job.sh scripts/daily.sh scripts/all-profiles.sh scripts/setup-cron.sh scripts/write-runtime-env.sh container-entrypoint.sh
 ```
+
+CI также smoke-тестирует shell-safe cron runtime env и параллельный запуск десяти профилей.
 
 Полный upstream код содержит legacy lint/type debt; CI отдельно показывает его как report-only, не маскируя ошибки в новом critical automation path.
 
@@ -354,11 +375,12 @@ shellcheck scripts/apply.sh scripts/reply.sh scripts/cron-job.sh scripts/daily.s
 - не менять search/filters сразу в live без preview;
 - не запускать одновременно несколько scheduler'ов для одной установки;
 - не копировать token/cookies между профилями;
-- не обходить `HH_AUTOMATION_MODE` и locks внешним параллельным cron;
+- не обходить `HH_AUTOMATION_MODE` и per-profile locks внешним параллельным cron;
 - не выставлять admin panel в интернет без auth/TLS.
 
 ## Документация
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — подробная code-grounded архитектура и Mermaid-схемы;
 - [docs/AUTONOMOUS_AGENT_WORKFLOW.md](docs/AUTONOMOUS_AGENT_WORKFLOW.md) — production automation и safety model;
 - [docs/LLM_SETUP.md](docs/LLM_SETUP.md) — LLM config/fallbacks/probe;
 - [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — CLI и agent-oriented use cases;

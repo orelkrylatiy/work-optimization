@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, "review/**"]
+    branches: [main, develop, "review/**", "docs/**"]
   pull_request:
     branches: [main, develop]
 
@@ -133,6 +133,7 @@ jobs:
             scripts/daily.sh \
             scripts/all-profiles.sh \
             scripts/setup-cron.sh \
+            scripts/write-runtime-env.sh \
             container-entrypoint.sh \
             startup.sh
       - name: Check automation scripts
@@ -146,6 +147,7 @@ jobs:
             scripts/daily.sh \
             scripts/all-profiles.sh \
             scripts/setup-cron.sh \
+            scripts/write-runtime-env.sh \
             container-entrypoint.sh \
             startup.sh
       - name: Smoke-test safe script entrypoints
@@ -153,6 +155,37 @@ jobs:
           bash scripts/apply.sh --help >/dev/null
           bash scripts/reply.sh --help >/dev/null
           HH_AUTOMATION_MODE=off bash scripts/cron-job.sh apply >/dev/null
+      - name: Smoke-test cron runtime environment
+        run: |
+          runtime_env="$(mktemp)"
+          HH_AUTOMATION_MODE=live \
+          CONFIG_DIR=/tmp/hh-config \
+          TZ=Europe/Tallinn \
+          HH_NAME='Test User' \
+          HH_TELEGRAM='@test_user' \
+          SEARCH_QUERY='React TypeScript developer' \
+          APPLY_LIMIT=17 \
+          APPLY_PER_PAGE=42 \
+          APPLY_PAGES=3 \
+          APPLY_RUN_TIMEOUT=777 \
+          REPLY_CHATS=23 \
+          HH_PROFILE_PARALLELISM=7 \
+            bash scripts/write-runtime-env.sh "$runtime_env"
+
+          # shellcheck disable=SC1090
+          source "$runtime_env"
+          test "$HH_AUTOMATION_MODE" = live
+          test "$CONFIG_DIR" = /tmp/hh-config
+          test "$TZ" = Europe/Tallinn
+          test "$HH_NAME" = 'Test User'
+          test "$HH_TELEGRAM" = '@test_user'
+          test "$SEARCH_QUERY" = 'React TypeScript developer'
+          test "$APPLY_LIMIT" = 17
+          test "$APPLY_PER_PAGE" = 42
+          test "$APPLY_PAGES" = 3
+          test "$APPLY_RUN_TIMEOUT" = 777
+          test "$REPLY_CHATS" = 23
+          test "$HH_PROFILE_PARALLELISM" = 7
       - name: Smoke-test ten concurrent profiles
         run: |
           fake_bin="$(mktemp -d)"

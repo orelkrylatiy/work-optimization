@@ -3,15 +3,19 @@
 Проект не требует отдельного LLM-агента для ежедневной работы. Оркестрация детерминирована:
 
 ```text
-cron -> cron-job.sh -> all-profiles.sh -> apply.sh / reply.sh -> hh-applicant-tool -> HH API
-                                      \-> ChatOpenAI -> configured LLM
+cron -> cron-job.sh -> all-profiles.sh -> apply.sh / reply.sh
+                                      -> hh-applicant-tool / ReplyWorker
+                                      -> HH API
+                                      -> LLM только для текста
 ```
 
-LLM отвечает только за текст. Решение, когда запускать отклики и когда проверять чаты, принимает расписание и код worker'а.
+Подробная архитектура по файлам и классам: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+LLM не решает, когда запускать отклики, какой профиль брать, можно ли писать в чат и можно ли отправлять stale reply. Эти решения принимает обычный код.
 
 ## Режимы
 
-Все scheduled jobs управляются одной переменной в `.env`:
+Все scheduled jobs управляются одной переменной:
 
 ```dotenv
 HH_AUTOMATION_MODE=off
@@ -19,23 +23,46 @@ HH_AUTOMATION_MODE=off
 
 Допустимые значения:
 
-- `off` — cron ничего не делает. Это default.
-- `dry-run` — scheduled jobs читают данные, но не совершают внешних действий.
-- `live` — разрешены отклики, ответы и boost резюме.
+- `off` — cron ничего не делает. Это default;
+- `dry-run` — scheduled jobs читают данные и строят preview без внешних write;
+- `live` — разрешены реальные отклики, ответы и boost резюме.
 
-После первого деплоя сначала оставь `off`, затем проверь ручные dry-run команды и только после этого переключай в `live`.
+После первого deploy сначала оставь `off`, затем проверь ручные dry-run и AI probe, и только после этого переключай в `live`.
 
 ## Расписание По Умолчанию
 
-Контейнерный `crontab` использует локальное время контейнера/сервера (`TZ`):
+Контейнерный `crontab` использует timezone контейнера/сервера (`TZ`):
 
 | Время | Job | Что делает |
 |---|---|---|
 | 09:00 | `boost` | поднимает опубликованные резюме, только в live |
 | 09:10 | `apply` | один batch откликов до `APPLY_LIMIT` |
-| каждый час 09:25–21:25 | `reply` | проверяет чаты и отвечает там, где последнее сообщение от работодателя |
+| каждый час 09:25–21:25 | `reply` | bounded pass по чатам, где последнее сообщение от работодателя |
 
-Отдельный cron для refresh-token не нужен: API client обновляет токен во время authenticated request и сохраняет новое значение.
+Отдельный cron для refresh-token не нужен: `ApiClient` умеет обновлять access token во время authenticated request, а CLI сохраняет обновившийся token после операции.
+
+## Container Runtime Environment
+
+Cron запускается с урезанным environment. Поэтому `container-entrypoint.sh` вызывает `scripts/write-runtime-env.sh`, который shell-safe сохраняет scheduler knobs в `/tmp/hh-runtime.env`.
+
+Scheduled jobs получают, среди прочего:
+
+```text
+HH_AUTOMATION_MODE
+CONFIG_DIR
+TZ
+HH_NAME
+HH_TELEGRAM
+SEARCH_QUERY
+APPLY_LIMIT
+APPLY_PER_PAGE
+APPLY_PAGES
+APPLY_RUN_TIMEOUT
+REPLY_CHATS
+HH_PROFILE_PARALLELISM
+```
+
+Это позволяет задавать значения через `docker-compose.yml` / `.env` и реально использовать их внутри cron job.
 
 ## Как Работают Отклики
 
@@ -44,17 +71,35 @@ HH_AUTOMATION_MODE=off
 - `APPLY_LIMIT` — максимум успешных откликов за запуск;
 - `APPLY_PAGES * APPLY_PER_PAGE` — максимальная глубина поиска.
 
-Это важно. Если `APPLY_LIMIT=100`, worker не должен останавливаться после просмотра первых 100 вакансий: часть вакансий уже обработана или отсеется фильтрами. По умолчанию он может просмотреть до `20 * 50` результатов и закончить раньше, когда реально достигнут лимит успешных откликов.
+По умолчанию:
 
-Live отклики требуют рабочий `openai_cover_letter`. Preflight выполняет `scripts/check_ai.py --purpose cover-letter`.
+```text
+APPLY_LIMIT=100
+APPLY_PAGES=20
+APPLY_PER_PAGE=50
+```
+
+То есть worker может просмотреть до 1000 вакансий и закончить раньше, когда реально достигнут лимит успешных откликов.
+
+Live отклики требуют рабочий `openai_cover_letter`. Preflight:
+
+```bash
+python scripts/check_ai.py --purpose cover-letter
+```
+
+Autonomous path использует `--skip-tests`: вакансии с тестовыми заданиями не решаются автоматически.
+
+При `AIError` во время cover-letter generation конкретная vacancy пропускается, `ai_error_count` увеличивается, а run в конце помечается неуспешным. Static fallback для массовых cover letters не используется.
 
 ## Как Работают Автоответы
 
-Primary path использует актуальный HH chat API:
+Primary path использует current common-chat API:
 
-- `GET /common/chats`
-- `GET /common/chats/{chat_id}/messages`
-- `POST /common/chats/{chat_id}/messages`
+```text
+GET /common/chats
+GET /common/chats/{chat_id}/messages
+POST /common/chats/{chat_id}/messages
+```
 
 Worker отвечает только если:
 
@@ -62,66 +107,129 @@ Worker отвечает только если:
 2. чат не заблокирован;
 3. `write_message_state.allowed == true`;
 4. последнее сообщение принадлежит роли `EMPLOYER`;
-5. после генерации AI последнее сообщение всё ещё то же самое.
+5. после генерации последнее сообщение всё ещё то же самое.
 
-Перед POST worker повторно читает чат. Если человек ответил вручную или пришло новое сообщение, AI-ответ считается stale и не отправляется.
+Перед POST worker повторно читает чат. Если человек ответил вручную или пришло новое сообщение, подготовленный ответ считается stale и не отправляется.
 
-Для каждого employer turn строится deterministic UUID `idempotency_key`. Повторная попытка использует тот же ключ, поэтому сетевой retry не должен создавать второе сообщение. Если HTTP-ответ потерян, worker дополнительно перечитывает чат и считает операцию успешной, когда ожидаемый текст уже появился последним сообщением кандидата.
+Для каждого employer turn строится deterministic UUID `idempotency_key` из `chat_id + employer_message_id`. Повторная попытка использует тот же key.
 
-## AI Fallback
+Если HTTP result неясен, worker перечитывает чат и считает операцию успешной, когда ожидаемый applicant text уже появился последним сообщением.
 
-Для ответов порядок конфигурации такой:
+## AI Fallback Для Reply
+
+Здесь есть два разных механизма fallback.
+
+### 1. Выбор provider config
 
 ```text
-openai_reply -> openai_cover_letter -> fail closed
+openai_reply
+    ↓ если секции нет
+openai_cover_letter
+    ↓ если валидной секции нет
+configuration error / STOP
 ```
 
-Никакого молчаливого fallback на локальную Ollama-модель или выдуманный model id нет. Live worker не запускается без валидной конфигурации.
+Live worker не подставляет скрытый URL/model/API key.
 
-Для откликов требуется именно `openai_cover_letter`.
+### 2. Runtime fallback сообщения
 
-Проверка без запроса к модели:
+После выбора provider `ChatOpenAI` выполняет свои network/provider retries. Если они исчерпаны и `complete()` бросает `OpenAIError`, `FallbackChatAI` может вернуть статический `reply_fallback.message`.
 
-```bash
-python scripts/check_ai.py --purpose cover-letter
-python scripts/check_ai.py --purpose reply
+Default fallback включён. Его можно переопределить или выключить в `config.json` профиля:
+
+```json
+{
+  "reply_fallback": {
+    "enabled": true,
+    "message": "Здравствуйте! Вакансия интересна. Готов обсудить детали и ответить на вопросы."
+  }
+}
 ```
 
-Реальный probe одним LLM-запросом:
+Fallback используется именно при runtime LLM failure. Если модель вернула плохой текст, он идёт через humanizer/corrective-generation и при повторной неудаче пропускается.
 
-```bash
-python scripts/check_ai.py --purpose reply --probe
-```
+## ChatOpenAI Retry Policy
+
+`src/hh_applicant_tool/ai/openai.py` повторяет transient failures:
+
+- network errors;
+- HTTP 408;
+- HTTP 409;
+- HTTP 425;
+- HTTP 429;
+- HTTP 5xx.
+
+`Retry-After` учитывается. Невалидный JSON, provider error или сломанный response shape преобразуются в `OpenAIError`.
 
 ## Humanizer
 
-Humanizer здесь состоит из двух слоёв:
+Humanizer состоит из двух слоёв:
 
 1. prompt rules в `prompts/cover_letter_frontend.txt` и `prompts/reply_employer.txt`;
-2. runtime validator для автономных ответов в `automation/reply_worker.py`.
+2. runtime validator для autonomous replies в `automation/reply_worker.py`.
 
-Reply validator отклоняет пустые/слишком длинные ответы, placeholder'ы, длинные тире и несколько характерных AI-клише. При нарушении worker один раз просит модель исправить ответ; если результат снова плохой, сообщение не отправляется.
+Reply validator отклоняет:
 
-Telegram больше не добавляется программно в каждый ответ. Он разрешён только когда переход в мессенджер уместен по контексту.
+- пустые ответы;
+- текст > 2000 символов;
+- placeholder'ы;
+- длинные тире;
+- несколько характерных AI-клише.
+
+При нарушении обычный LLM reply получает одну corrective generation. Если результат снова плохой, сообщение не отправляется.
+
+Static reply fallback тоже обязан проходить те же quality checks.
 
 ## Multi-profile И Concurrency
 
-`.profiles` содержит по одному profile id на строку. `all-profiles.sh` запускает профили параллельно, но использует per-profile lock. `cron-job.sh` добавляет глобальный lock между scheduled jobs, чтобы apply и reply не конкурировали за одну HH-сессию.
+`.profiles` содержит по одному profile id на строку. `all-profiles.sh` запускает профили параллельно.
 
-## Fail-closed Правила
+Default:
+
+```dotenv
+HH_PROFILE_PARALLELISM=10
+```
+
+Для каждого профиля используется отдельный `flock`. Поэтому:
+
+- два conflicting job не работают одновременно с одним и тем же HH-профилем;
+- разные профили не блокируют друг друга;
+- crash/OOM/SIGKILL автоматически освобождает lock через закрытие file descriptor.
+
+**Глобального fleet lock в `cron-job.sh` нет.** Это намеренно: один занятый аккаунт не должен останавливать остальные.
+
+## Fail-closed / Fail-safe Правила
 
 Live worker прекращает или пропускает действие при:
 
-- отсутствии авторизации;
+- отсутствии HH authorization;
 - невалидной AI-конфигурации;
 - недоступности HH API;
 - невозможности писать в чат;
 - изменившемся последнем сообщении;
-- плохом AI-ответе;
-- исчерпании retries.
+- плохом LLM reply после corrective retry;
+- ошибке отправки после retries/read-back.
 
-Ошибки не должны превращаться в шаблонную массовую отправку.
+Исключение из полного fail-closed поведения — специально настроенный **reply runtime fallback** после `OpenAIError`. Он не обходит stale-check, humanizer или idempotency.
+
+## Dry-run
+
+### Reply
+
+`reply.sh --dry-run`:
+
+- читает HH chats;
+- строит decisions;
+- не вызывает LLM;
+- не отправляет сообщения;
+- выводит deterministic preview.
+
+### Apply
+
+`apply.sh --dry-run` проходит selection/filtering flow, но external writes блокируются. Потенциальный отклик моделируется как accepted, чтобы quota logic в preview совпадала с live flow.
 
 ## MCP
 
-MCP для текущей задачи не нужен. Скрипты уже являются стабильным command surface для cron и внешнего агента. MCP имеет смысл добавить позже, только если Claude/Codex должен интерактивно вызывать отдельные операции (`scan`, `apply`, `get_chats`, `reply`) как typed tools. Для ежедневного автономного цикла это лишний слой.
+MCP для ежедневного автономного цикла сейчас не нужен. Скрипты уже являются стабильным command surface для cron и внешнего агента.
+
+MCP имеет смысл добавить позже, если Claude/Codex должен интерактивно вызывать typed operations вроде `scan`, `apply`, `get_chats`, `reply` и получать структурированные результаты. Для production scheduler это дополнительный необязательный слой.

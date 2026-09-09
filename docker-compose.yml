@@ -13,15 +13,15 @@ services:
     restart: unless-stopped
     environment:
       CONFIG_DIR: /app/config
-      TERM: ${TERM:-xterm}
-      TZ: ${TZ:-Europe/Moscow}
-      HH_AUTOMATION_MODE: ${HH_AUTOMATION_MODE:-off}
-      HH_NAME: ${HH_NAME:-}
-      HH_TELEGRAM: ${HH_TELEGRAM:-}
-      SEARCH_QUERY: ${SEARCH_QUERY:-Frontend разработчик}
-      APPLY_LIMIT: ${APPLY_LIMIT:-100}
-      APPLY_PER_PAGE: ${APPLY_PER_PAGE:-50}
-      APPLY_PAGES: ${APPLY_PAGES:-20}
-      APPLY_RUN_TIMEOUT: ${APPLY_RUN_TIMEOUT:-3600}
-      REPLY_CHATS: ${REPLY_CHATS:-100}
-      HH_PROFILE_PARALLELISM: ${HH_PROFILE_PARALLELISM:-10}
+      TERM: "${TERM:-xterm}"
+      TZ: "${TZ:-Europe/Moscow}"
+      HH_AUTOMATION_MODE: "${HH_AUTOMATION_MODE:-off}"
+      HH_NAME: "${HH_NAME:-}"
+      HH_TELEGRAM: "${HH_TELEGRAM:-}"
+      SEARCH_QUERY: "${SEARCH_QUERY:-Frontend разработчик}"
+      APPLY_LIMIT: "${APPLY_LIMIT:-100}"
+      APPLY_PER_PAGE: "${APPLY_PER_PAGE:-50}"
+      APPLY_PAGES: "${APPLY_PAGES:-20}"
+      APPLY_RUN_TIMEOUT: "${APPLY_RUN_TIMEOUT:-3600}"
+      REPLY_CHATS: "${REPLY_CHATS:-100}"
+      HH_PROFILE_PARALLELISM: "${HH_PROFILE_PARALLELISM:-10}"

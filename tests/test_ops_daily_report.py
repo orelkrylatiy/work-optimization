@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
-from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "ops" / "daily_report.py"

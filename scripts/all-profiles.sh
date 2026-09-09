@@ -92,11 +92,21 @@ fi
 # Raw logs stay git-ignored; only aggregate ops/*.json is published.
 LOG_DIR="${HH_PROFILES_LOG_DIR:-$PROJECT_ROOT/logs/profiles}"
 LOCK_DIR="${HH_PROFILES_LOCK_DIR:-/tmp/hh-profile-locks}"
+LOG_MAX_BYTES="${HH_PROFILE_LOG_MAX_BYTES:-10485760}"
+LOG_BACKUPS="${HH_PROFILE_LOG_BACKUPS:-5}"
 mkdir -p "$LOG_DIR" "$LOCK_DIR"
+
+for value_name in LOG_MAX_BYTES LOG_BACKUPS; do
+    value="${!value_name}"
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        echo "$value_name must be a positive integer: $value" >&2
+        exit 2
+    fi
+done
 
 echo "Running '$COMMAND' for ${#PROFILES_LIST[@]} profile(s), parallelism=$PARALLELISM"
 echo "Profiles: ${PROFILES_LIST[*]}"
-echo "Logs: $LOG_DIR/<profile>-$COMMAND.log"
+echo "Logs: $LOG_DIR/<profile>-$COMMAND.log (rotate at ${LOG_MAX_BYTES}B, backups=$LOG_BACKUPS)"
 
 PIDS=()
 RUN_PROFILES=()
@@ -118,6 +128,23 @@ wait_batch() {
     RUN_PROFILES=()
 }
 
+rotate_log_if_needed() {
+    local log="$1"
+    local size index
+
+    [[ -f "$log" ]] || return 0
+    size="$(wc -c < "$log")"
+    (( size < LOG_MAX_BYTES )) && return 0
+
+    rm -f "$log.$LOG_BACKUPS"
+    for (( index=LOG_BACKUPS - 1; index>=1; index-- )); do
+        if [[ -f "$log.$index" ]]; then
+            mv "$log.$index" "$log.$((index + 1))"
+        fi
+    done
+    mv "$log" "$log.1"
+}
+
 start_profile() {
     local profile="$1"
     local log="$LOG_DIR/${profile}-${COMMAND}.log"
@@ -127,10 +154,17 @@ start_profile() {
         # File-descriptor locks are released by the kernel even on crash/OOM/SIGKILL.
         exec 9>"$lock"
         if ! flock -n 9; then
-            echo "[$(date '+%F %T')] HH_RUN_SKIP profile=$profile command=$COMMAND mode=$RUN_MODE_MARKER status=0"
-            echo "Profile $profile is already being processed; skipped"
+            {
+                echo "[$(date '+%F %T')] HH_RUN_SKIP profile=$profile command=$COMMAND mode=$RUN_MODE_MARKER status=0"
+                echo "Profile $profile is already being processed; skipped"
+            } >> "$log" 2>&1
             exit 0
         fi
+
+        # Rotate only after acquiring the profile lock and before opening the
+        # append descriptor, so no live process keeps writing to an old inode.
+        rotate_log_if_needed "$log"
+        exec >> "$log" 2>&1
 
         echo "[$(date '+%F %T')] HH_RUN_START profile=$profile command=$COMMAND mode=$RUN_MODE_MARKER"
         set +e
@@ -156,7 +190,7 @@ start_profile() {
         set -e
         echo "[$(date '+%F %T')] HH_RUN_END profile=$profile command=$COMMAND mode=$RUN_MODE_MARKER status=$status"
         exit "$status"
-    ) >> "$log" 2>&1 &
+    ) &
 
     PIDS+=("$!")
     RUN_PROFILES+=("$profile")

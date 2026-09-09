@@ -7,7 +7,7 @@
 ```text
 raw runtime
 ├── config/<profile>/log.txt*      Python RotatingFileHandler
-├── logs/profiles/*.log            apply/reply/boost wrapper history
+├── logs/profiles/*.log*           apply/reply/boost wrapper history
 ├── logs/cron.log                  scheduler output
 └── config/<profile>/data          SQLite
             │
@@ -58,6 +58,15 @@ logs/profiles/<profile>-<command>.log
 - сколько завершилось ошибкой;
 - сколько было пропущено из-за занятого per-profile lock;
 - live/dry-run/utility mode.
+
+Wrapper logs не растут бесконечно: по умолчанию файл ротируется примерно на 10 MiB и хранится до 5 backup-файлов. Настройка:
+
+```text
+HH_PROFILE_LOG_MAX_BYTES=10485760
+HH_PROFILE_LOG_BACKUPS=5
+```
+
+Ротация выполняется только под тем же per-profile `flock`, поэтому другой процесс не может одновременно писать в переносимый файл. Collector читает и текущие `.log`, и rotated `.log.*`.
 
 ### Apply
 
@@ -157,6 +166,8 @@ Raw scheduler output хранится в:
 logs/ops-daily.log
 ```
 
+Так как compose bind-mount'ит repository в `/app`, созданные `ops/*.json` видны и в host clone.
+
 ## Автоматически с обычными git-коммитами
 
 В репозитории есть `githooks/pre-commit`. Активировать один раз в конкретном clone:
@@ -164,6 +175,8 @@ logs/ops-daily.log
 ```bash
 git config core.hooksPath githooks
 ```
+
+`dev-setup.sh` делает это автоматически.
 
 После этого перед обычным commit hook:
 
@@ -178,7 +191,7 @@ Merge commits не снапшотятся.
 
 ## Автоматический commit + push на runtime host/VPS
 
-Если нужен ежедневный Git history даже когда код никто не коммитит, на чистом clone с настроенными git credentials запускай:
+Если нужен ежедневный Git history даже когда код никто не коммитит, publisher запускается на **runtime host**, где одновременно доступны bind-mounted `logs/`/`config/` и git credentials:
 
 ```bash
 bash scripts/ops/daily_publish.sh yesterday
@@ -201,13 +214,38 @@ OPS_PUBLISH_BRANCH=main
 OPS_PYTHON=python3
 ```
 
-Пример host cron в `02:30`, после container collector:
+### Если HH scheduler работает внутри Docker
 
-```cron
-30 2 * * * cd /path/to/work-optimization && OPS_TIMEZONE=Europe/Moscow bash scripts/ops/daily_publish.sh yesterday >> logs/ops-publish.log 2>&1
+Используй отдельный ops-only installer:
+
+```bash
+bash scripts/ops/setup-publish-cron.sh
 ```
 
-Этот publisher нужно запускать **там, где доступны runtime `logs/`/`config/` и git credentials**. GitHub Actions сам по себе production logs не видит, поэтому scheduled CI не заменяет runtime publisher.
+Он ставит **только** ежедневный publisher (02:30 по умолчанию) и не добавляет apply/reply/boost jobs, поэтому не создаёт второй HH scheduler рядом с контейнером.
+
+Настроить можно так:
+
+```bash
+OPS_PUBLISH_TIME=03:00 \
+OPS_TIMEZONE=Europe/Moscow \
+OPS_PUBLISH_BRANCH=main \
+bash scripts/ops/setup-publish-cron.sh
+```
+
+Host должен уметь выполнять `git pull` и `git push` без интерактивного ввода пароля/ключа.
+
+### Если HH scheduler сам установлен на host без Docker cron
+
+Можно одним вызовом поставить и HH jobs, и publisher:
+
+```bash
+OPS_AUTO_PUBLISH=1 bash scripts/setup-cron.sh
+```
+
+**Не используй этот вариант только ради publisher рядом с Docker cron:** `setup-cron.sh` также устанавливает apply/reply/boost и тогда появится второй scheduler.
+
+GitHub Actions сам по себе production logs не видит, поэтому scheduled CI не заменяет runtime publisher.
 
 ## Анализ через ChatGPT
 

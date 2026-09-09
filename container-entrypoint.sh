@@ -3,9 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-touch /var/log/cron.log
-chown docker:docker /var/log/cron.log
-mkdir -p /app/logs /app/config
+mkdir -p /app/logs/profiles /app/config
+touch /app/logs/cron.log /app/logs/ops-daily.log
 chown -R docker:docker /app/logs /app/config
 
 # Cron has a deliberately small environment. Persist only the non-secret

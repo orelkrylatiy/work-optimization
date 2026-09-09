@@ -30,9 +30,11 @@ echo "📦 Installing dependencies..."
 poetry install --with dev
 
 echo ""
-echo "🪝 Setting up pre-commit hooks..."
+echo "🪝 Setting up pre-commit + ops snapshot hook..."
 poetry run pip install pre-commit
-pre-commit install
+chmod +x githooks/pre-commit
+git config core.hooksPath githooks
+echo "✅ Git will run githooks/pre-commit (quality checks + fresh ops snapshot)"
 
 echo ""
 echo "📝 Setting up configuration files..."
@@ -59,4 +61,4 @@ echo "2. Edit config/config.yaml with your settings"
 echo "3. Run tests: poetry run pytest tests/"
 echo "4. Or start dev with Docker: docker-compose up"
 echo ""
-echo "📚 For more info, see DEVOPS.md"
+echo "📚 For runtime diagnostics, see ops/README.md"

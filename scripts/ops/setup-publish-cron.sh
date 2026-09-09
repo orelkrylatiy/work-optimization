@@ -75,6 +75,6 @@ Ops publisher cron installed:
   repository: $PROJECT_DIR
 
 It installs ONLY the ops publisher and does not schedule HH apply/reply/boost.
-The runtime host must be able to run `git pull` and `git push` non-interactively.
+The runtime host must be able to run git pull and git push non-interactively.
 Publisher log: $PROJECT_DIR/logs/ops-publish.log
 EOF

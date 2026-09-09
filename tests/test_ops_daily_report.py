@@ -7,7 +7,6 @@ import sqlite3
 import subprocess
 import sys
 
-
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "ops" / "daily_report.py"
 
 

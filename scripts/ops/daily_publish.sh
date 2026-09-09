@@ -52,6 +52,8 @@ if git diff --cached --quiet -- "$REPORT_PATH" ops/latest.json; then
 fi
 
 REPORT_DATE="$(basename "$REPORT_PATH" .json)"
-git commit -m "ops: daily snapshot $REPORT_DATE" -- "$REPORT_PATH" ops/latest.json
+# Keep quality checks from the repository hook, but do not let that hook rebuild
+# a `today` snapshot while we are intentionally publishing another date.
+OPS_SKIP_HOOK_SNAPSHOT=1 git commit -m "ops: daily snapshot $REPORT_DATE" -- "$REPORT_PATH" ops/latest.json
 git push origin "$BRANCH"
 echo "ops publish: published $REPORT_PATH"

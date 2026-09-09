@@ -2,24 +2,28 @@
 PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 SHELL=/bin/bash
 
-# All jobs are gated by HH_AUTOMATION_MODE in /app/.env:
+# All external-action jobs are gated by HH_AUTOMATION_MODE in /app/.env:
 #   off      - do nothing (default)
 #   dry-run  - inspect only
 #   live     - perform external writes
 # Times below use the container/server timezone (set TZ in .env/compose).
 
-@reboot cd /app && /bin/bash /app/startup.sh >> /var/log/cron.log 2>&1
+@reboot cd /app && /bin/bash /app/startup.sh >> /app/logs/cron.log 2>&1
+
+# Build yesterday's aggregate diagnostic snapshot even when automation is off.
+# This only reads local logs/SQLite and writes ops/*.json; it does not call HH/LLM.
+20 2 * * * cd /app && . /tmp/hh-runtime.env && /usr/local/bin/python3 /app/scripts/ops/daily_report.py --date yesterday >> /app/logs/ops-daily.log 2>&1
 
 # Refresh resume visibility shortly before the daily application batch.
-0 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh boost >> /var/log/cron.log 2>&1
+0 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh boost >> /app/logs/cron.log 2>&1
 
 # One daily application batch. apply.sh keeps scanning until APPLY_LIMIT
 # successful responses or until APPLY_PAGES are exhausted.
-10 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh apply >> /var/log/cron.log 2>&1
+10 9 * * * cd /app && /bin/bash /app/scripts/cron-job.sh apply >> /app/logs/cron.log 2>&1
 
 # Poll chats hourly through the current /common/chats API. Each employer turn
 # has a deterministic idempotency key, so retries cannot create duplicate sends.
-25 9-21 * * * cd /app && /bin/bash /app/scripts/cron-job.sh reply >> /var/log/cron.log 2>&1
+25 9-21 * * * cd /app && /bin/bash /app/scripts/cron-job.sh reply >> /app/logs/cron.log 2>&1
 
 # No separate refresh-token cron is needed: ApiClient refreshes access tokens
 # on authenticated requests and persists the updated token after the command.

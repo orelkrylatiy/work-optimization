@@ -1,0 +1,177 @@
+{
+  "code_revision": "187ae074a1cb",
+  "date": "2026-09-08",
+  "generated_at": "2026-09-09T23:08:02+03:00",
+  "logs": {
+    "events": {},
+    "files_by_source": {
+      "cron": 1,
+      "other": 3,
+      "profile": 6
+    },
+    "files_scanned": 10,
+    "levels": {
+      "debug": 1414,
+      "error": 1,
+      "info": 211,
+      "warning": 18
+    },
+    "lines_for_day": 1644
+  },
+  "privacy": {
+    "aggregate_only": true,
+    "chat_text_included": false,
+    "employer_names_included": false,
+    "ids_included": false,
+    "raw_log_lines_included": false,
+    "secrets_included": false,
+    "urls_included": false,
+    "vacancy_titles_included": false
+  },
+  "profiles": {
+    "350": {
+      "apply": {
+        "ai_errors": 0,
+        "captcha_failed": 0,
+        "captcha_required": 0,
+        "dry_run_planned": 0,
+        "quota_reached": 0,
+        "sent": 0
+      },
+      "database": {
+        "exists": true,
+        "read_error": false,
+        "tables": {
+          "employers": 67,
+          "negotiations": 188,
+          "resumes": 1,
+          "skipped_vacancies": 724,
+          "vacancies": 1036
+        }
+      },
+      "log_events": {},
+      "reply": {
+        "candidates": 0,
+        "errors": 0,
+        "fallback": 0,
+        "planned": 0,
+        "sent": 0,
+        "skipped": 0,
+        "stale": 0
+      },
+      "runs": {}
+    },
+    "919": {
+      "apply": {
+        "ai_errors": 0,
+        "captcha_failed": 0,
+        "captcha_required": 0,
+        "dry_run_planned": 0,
+        "quota_reached": 0,
+        "sent": 0
+      },
+      "database": {
+        "exists": true,
+        "read_error": false,
+        "tables": {
+          "employers": 64,
+          "negotiations": 166,
+          "resumes": 1,
+          "skipped_vacancies": 711,
+          "vacancies": 1001
+        }
+      },
+      "log_events": {},
+      "reply": {
+        "candidates": 0,
+        "errors": 0,
+        "fallback": 0,
+        "planned": 0,
+        "sent": 0,
+        "skipped": 0,
+        "stale": 0
+      },
+      "runs": {}
+    },
+    "995": {
+      "apply": {
+        "ai_errors": 0,
+        "captcha_failed": 0,
+        "captcha_required": 0,
+        "dry_run_planned": 0,
+        "quota_reached": 0,
+        "sent": 0
+      },
+      "database": {
+        "exists": true,
+        "read_error": false,
+        "tables": {
+          "employers": 0,
+          "negotiations": 0,
+          "resumes": 0,
+          "skipped_vacancies": 0,
+          "vacancies": 0
+        }
+      },
+      "log_events": {},
+      "reply": {
+        "candidates": 0,
+        "errors": 0,
+        "fallback": 0,
+        "planned": 0,
+        "sent": 0,
+        "skipped": 0,
+        "stale": 0
+      },
+      "runs": {}
+    },
+    "default": {
+      "apply": {
+        "ai_errors": 0,
+        "captcha_failed": 0,
+        "captcha_required": 0,
+        "dry_run_planned": 0,
+        "quota_reached": 0,
+        "sent": 0
+      },
+      "database": {
+        "exists": true,
+        "read_error": false,
+        "tables": {
+          "employers": 0,
+          "negotiations": 0,
+          "resumes": 0,
+          "skipped_vacancies": 0,
+          "vacancies": 0
+        }
+      },
+      "log_events": {},
+      "reply": {
+        "candidates": 0,
+        "errors": 0,
+        "fallback": 0,
+        "planned": 0,
+        "sent": 0,
+        "skipped": 0,
+        "stale": 0
+      },
+      "runs": {}
+    }
+  },
+  "schema_version": 1,
+  "timezone": "Europe/Moscow",
+  "totals": {
+    "application_ai_errors": 0,
+    "applications_dry_run_planned": 0,
+    "applications_sent": 0,
+    "replies_planned": 0,
+    "replies_sent": 0,
+    "replies_stale": 0,
+    "reply_candidates": 0,
+    "reply_errors": 0,
+    "reply_fallbacks": 0,
+    "runs_failed": 0,
+    "runs_started": 0,
+    "technical_event_occurrences": 0
+  }
+}

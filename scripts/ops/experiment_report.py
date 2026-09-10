@@ -124,12 +124,15 @@ def _read_profile(db_path: Path) -> dict[str, Any]:
                 "cover_letters": defaultdict(_new_metrics),
                 "resumes": defaultdict(_new_metrics),
                 "actual_cover_modes": defaultdict(_new_metrics),
+                "cells": defaultdict(_new_metrics),
             }
         _accumulate(buckets[experiment]["cover_letters"][row["cover_variant"]], row)
         _accumulate(buckets[experiment]["resumes"][row["resume_variant"]], row)
         _accumulate(
             buckets[experiment]["actual_cover_modes"][row["cover_actual_mode"]], row
         )
+        cell = f"{row['resume_variant']}|{row['cover_variant']}"
+        _accumulate(buckets[experiment]["cells"][cell], row)
 
     for experiment, dimensions in buckets.items():
         experiments[experiment] = {

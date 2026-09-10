@@ -298,13 +298,9 @@ def test_collect_candidate_chats_only_keeps_messageable_employer_turns() -> None
         if endpoint.startswith("/negotiations?page="):
             return negotiations
         if endpoint == "/negotiations/reply-me/messages?page=0":
-            return _messages_response(
-                _message("1", EMPLOYER_ROLE, "Привет", "2026-01-01T10:00:00")
-            )
+            return _messages_response(_message("1", EMPLOYER_ROLE, "Привет", "2026-01-01T10:00:00"))
         if endpoint == "/negotiations/already-replied/messages?page=0":
-            return _messages_response(
-                _message("2", APPLICANT_ROLE, "Ответ", "2026-01-01T10:00:00")
-            )
+            return _messages_response(_message("2", APPLICANT_ROLE, "Ответ", "2026-01-01T10:00:00"))
         raise AssertionError(f"unexpected endpoint: {endpoint}")
 
     hh = Mock()

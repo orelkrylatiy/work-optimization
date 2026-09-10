@@ -178,6 +178,15 @@ def sorted_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(messages, key=lambda item: str(item.get("creation_time") or ""))
 
 
+def sanitize_reply_text(text: str) -> str:
+    """Косметическая нормализация: LLM любит длинные тире, живой человек — дефис.
+
+    Вызывается до проверки качества, чтобы тире не отправляло чат
+    в fail-closed (два отклонения подряд = чат без ответа).
+    """
+    return (text or "").replace("—", "-").replace("–", "-")
+
+
 def reply_quality_issues(text: str) -> list[str]:
     normalized = " ".join((text or "").split())
     if not normalized:
@@ -412,7 +421,7 @@ class ReplyWorker:
         correction = ""
         for attempt in range(self.config.ai_retries + 1):
             try:
-                reply = self.ai.complete(self._generation_prompt(decision, correction)).strip()
+                reply = sanitize_reply_text(self.ai.complete(self._generation_prompt(decision, correction)).strip())
             except OpenAIError as exc:
                 logger.error("AI failed for chat %s: %s", decision.chat_id, exc)
                 return None

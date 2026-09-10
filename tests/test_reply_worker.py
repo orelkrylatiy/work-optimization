@@ -9,6 +9,7 @@ import pytest
 
 from hh_applicant_tool.ai.openai import OpenAIError
 from hh_applicant_tool.automation.reply_worker import (
+    sanitize_reply_text,
     APPLICANT_ROLE,
     EMPLOYER_ROLE,
     HHCLI,
@@ -147,6 +148,11 @@ def test_humanizer_rejects_placeholders_long_dash_and_ai_cliches() -> None:
     assert "contains a long dash" in issues
     assert "contains a placeholder" in issues
     assert "contains an AI-style cliche" in issues
+
+
+def test_sanitize_reply_replaces_long_dashes_with_hyphen() -> None:
+    assert sanitize_reply_text("Да — удобно. Также–проверка — ок.") == "Да - удобно. Также-проверка - ок."
+    assert sanitize_reply_text("") == ""
 
 
 def test_humanizer_accepts_short_natural_reply() -> None:

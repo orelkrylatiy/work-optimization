@@ -32,9 +32,7 @@ class Operation(BaseApplyOperation):
         args.system_prompt = load_prompt(args.system_prompt) or ""
         args.message_prompt = load_prompt(args.message_prompt) or ""
         self.cover_letter = (
-            expand_env_placeholders(
-                args.letter_file.read_text(encoding="utf-8", errors="ignore")
-            )
+            expand_env_placeholders(args.letter_file.read_text(encoding="utf-8", errors="ignore"))
             if args.letter_file
             else self.cover_letter
         )
@@ -47,9 +45,7 @@ class Operation(BaseApplyOperation):
         )
 
         profile_key = (
-            getattr(tool, "profile_id", None)
-            or os.environ.get("HH_PROFILE_ID")
-            or "default"
+            getattr(tool, "profile_id", None) or os.environ.get("HH_PROFILE_ID") or "default"
         )
         raw_experiment = tool.config.get("apply_experiments")
         self.experiment = ApplyExperimentConfig.from_mapping(
@@ -68,9 +64,7 @@ class Operation(BaseApplyOperation):
                 for resume in tool.get_resumes()
                 if (resume.get("status") or {}).get("id") == "published"
             }
-            required = {
-                str(variant.resume_id) for variant in self.experiment.resume_variants
-            }
+            required = {str(variant.resume_id) for variant in self.experiment.resume_variants}
             missing = required - published
             if missing:
                 raise ValueError(
@@ -83,9 +77,7 @@ class Operation(BaseApplyOperation):
             if self.experiment.enabled and not self.dry_run
             else None
         )
-        self._cover_outcomes: dict[
-            tuple[str, str], tuple[str, str, str, bool]
-        ] = {}
+        self._cover_outcomes: dict[tuple[str, str], tuple[str, str, str, bool]] = {}
         self._cover_variant_clients: dict[str, Any] = {}
         self.cover_fallback_count = 0
         self.ai_error_count = 0
@@ -155,9 +147,7 @@ class Operation(BaseApplyOperation):
     def _resume_quotas(self, limit: int) -> dict[str, int]:
         variants = self.experiment.resume_variants
         total_weight = sum(variant.weight for variant in variants)
-        quotas = {
-            variant.id: limit * variant.weight // total_weight for variant in variants
-        }
+        quotas = {variant.id: limit * variant.weight // total_weight for variant in variants}
         remainder = limit - sum(quotas.values())
         ranked = sorted(
             enumerate(variants),
@@ -228,8 +218,7 @@ class Operation(BaseApplyOperation):
             assigned = self.experiment.choose_resume(vacancy["id"])
             if assigned.resume_id != resume_id:
                 logger.debug(
-                    "Experiment %s assigned vacancy to resume variant %s; "
-                    "current resume skipped",
+                    "Experiment %s assigned vacancy to resume variant %s; current resume skipped",
                     self.experiment.name,
                     assigned.id,
                 )
@@ -306,9 +295,7 @@ class Operation(BaseApplyOperation):
         variant = self._cover_variant(vacancy, resume)
         assigned_variant = variant.id if variant else "default"
         assigned_mode = (
-            variant.mode
-            if variant
-            else ("ai" if self.cover_letter_ai_requested else "template")
+            variant.mode if variant else ("ai" if self.cover_letter_ai_requested else "template")
         )
 
         if assigned_mode == "template":

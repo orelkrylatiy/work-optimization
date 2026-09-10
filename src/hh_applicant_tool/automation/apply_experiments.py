@@ -77,9 +77,7 @@ class ApplyExperimentConfig:
         cover_variants = _parse_variants(raw.get("cover_letters"), dimension="cover")
         resume_variants = _parse_variants(raw.get("resumes"), dimension="resume")
         if not cover_variants and not resume_variants:
-            raise ValueError(
-                "enabled apply_experiments must define cover_letters and/or resumes"
-            )
+            raise ValueError("enabled apply_experiments must define cover_letters and/or resumes")
 
         return cls(
             enabled=True,
@@ -149,9 +147,7 @@ def _parse_variants(raw: Any, *, dimension: str) -> tuple[WeightedVariant, ...]:
     for item in items:
         variant_id = str(item.get("id") or "").strip()
         if not VARIANT_ID_RE.fullmatch(variant_id):
-            raise ValueError(
-                f"invalid {dimension} variant id {variant_id!r}; use a short slug"
-            )
+            raise ValueError(f"invalid {dimension} variant id {variant_id!r}; use a short slug")
         if variant_id in ids:
             raise ValueError(f"duplicate {dimension} variant id: {variant_id}")
         ids.add(variant_id)
@@ -166,9 +162,7 @@ def _parse_variants(raw: Any, *, dimension: str) -> tuple[WeightedVariant, ...]:
         if dimension == "cover":
             mode = str(item.get("mode") or "").strip().lower()
             if mode not in {"ai", "template"}:
-                raise ValueError(
-                    f"cover variant {variant_id} mode must be 'ai' or 'template'"
-                )
+                raise ValueError(f"cover variant {variant_id} mode must be 'ai' or 'template'")
             resume_id = None
         else:
             mode = "resume"
@@ -185,18 +179,12 @@ def _parse_variants(raw: Any, *, dimension: str) -> tuple[WeightedVariant, ...]:
                 weight=weight,
                 mode=mode,
                 resume_id=resume_id,
-                template=(
-                    str(item["template"]) if item.get("template") is not None else None
-                ),
+                template=(str(item["template"]) if item.get("template") is not None else None),
                 system_prompt=(
-                    str(item["system_prompt"])
-                    if item.get("system_prompt") is not None
-                    else None
+                    str(item["system_prompt"]) if item.get("system_prompt") is not None else None
                 ),
                 message_prompt=(
-                    str(item["message_prompt"])
-                    if item.get("message_prompt") is not None
-                    else None
+                    str(item["message_prompt"]) if item.get("message_prompt") is not None else None
                 ),
             )
         )

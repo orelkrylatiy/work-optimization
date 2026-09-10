@@ -252,7 +252,7 @@ class ApplyExperimentTracker:
                 assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 sent_at DATETIME,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (experiment, vacancy_id, resume_id)
+                PRIMARY KEY (experiment, vacancy_id)
             );
             CREATE INDEX IF NOT EXISTS idx_apply_exp_vac_resume
                 ON apply_experiment_assignments(vacancy_id, resume_id);
@@ -265,13 +265,14 @@ class ApplyExperimentTracker:
     def ensure_assignment(self, record: AssignmentRecord) -> None:
         existing = self.conn.execute(
             """
-            SELECT resume_variant, cover_variant, cover_assigned_mode
+            SELECT resume_id, resume_variant, cover_variant, cover_assigned_mode
             FROM apply_experiment_assignments
-            WHERE experiment = ? AND vacancy_id = ? AND resume_id = ?
+            WHERE experiment = ? AND vacancy_id = ?
             """,
-            (record.experiment, record.vacancy_id, record.resume_id),
+            (record.experiment, record.vacancy_id),
         ).fetchone()
         expected = (
+            record.resume_id,
             record.resume_variant,
             record.cover_variant,
             record.cover_assigned_mode,
@@ -331,7 +332,7 @@ class ApplyExperimentTracker:
             SET cover_actual_mode = ?, fallback_used = ?, send_status = ?,
                 failure_kind = ?, sent_at = CASE WHEN ? THEN COALESCE(sent_at, ?) ELSE sent_at END,
                 updated_at = ?
-            WHERE experiment = ? AND vacancy_id = ? AND resume_id = ?
+            WHERE experiment = ? AND vacancy_id = ?
             """,
             (
                 record.cover_actual_mode,
@@ -343,7 +344,6 @@ class ApplyExperimentTracker:
                 now,
                 record.experiment,
                 record.vacancy_id,
-                record.resume_id,
             ),
         )
         self.conn.commit()

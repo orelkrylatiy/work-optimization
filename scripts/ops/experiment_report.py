@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,7 +165,7 @@ def build_report(config_dir: Path) -> dict[str, Any]:
 
     return {
         "schema_version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "scope": "cumulative_current_state",
         "privacy": {
             "aggregate_only": True,

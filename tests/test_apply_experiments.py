@@ -218,6 +218,10 @@ def test_experiment_report_aggregates_outcomes_without_exporting_raw_ids(
     assert exp["cover_letters"]["template"]["states"]["discard"] == 1
     assert exp["resumes"]["resume_a"]["sent"] == 2
     assert exp["resumes"]["resume_b"]["sent"] == 1
+    assert exp["cells"]["resume_a|ai"]["sent"] == 2
+    assert exp["cells"]["resume_a|ai"]["fallbacks"] == 1
+    assert exp["cells"]["resume_b|template"]["sent"] == 1
+    assert exp["actual_cover_modes"]["fallback_template"]["sent"] == 1
 
     serialized = json.dumps(report, ensure_ascii=False)
     for secret in (

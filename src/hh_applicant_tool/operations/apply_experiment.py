@@ -12,11 +12,10 @@ from ..automation.apply_experiments import (
     AssignmentRecord,
     WeightedVariant,
 )
-from ..main import BaseNamespace
 from ..storage.repositories.errors import RepositoryError
 from ..utils.misc import expand_env_placeholders, load_prompt
 from ..utils.string import rand_text
-from .apply_vacancies import Operation as BaseApplyOperation
+from .apply_vacancies import Namespace, Operation as BaseApplyOperation
 
 logger = logging.getLogger(__package__)
 
@@ -26,7 +25,7 @@ class Operation(BaseApplyOperation):
 
     __aliases__ = ("apply-ab",)
 
-    def run(self, tool, args: BaseNamespace) -> int | None:
+    def run(self, tool, args: Namespace) -> int | None:
         self.tool = tool
         self._args = args
         args.system_prompt = load_prompt(args.system_prompt) or ""
@@ -94,8 +93,10 @@ class Operation(BaseApplyOperation):
         self._resume_analysis_cache: dict[tuple[str | None, str], str] = {}
         self._vacancy_context_cache: dict[str, dict[str, Any]] = {}
 
-        wants_ai = bool(args.use_ai) or any(
-            variant.mode == "ai" for variant in self.experiment.cover_variants
+        wants_ai = (
+            any(variant.mode == "ai" for variant in self.experiment.cover_variants)
+            if self.experiment.cover_enabled
+            else bool(args.use_ai)
         )
         self.cover_letter_ai_requested = wants_ai
         if wants_ai:
@@ -150,20 +151,72 @@ class Operation(BaseApplyOperation):
             except RepositoryError as exc:
                 logger.warning("Could not sync experiment negotiation state: %s", exc)
 
+    def _resume_quotas(self, limit: int) -> dict[str, int]:
+        variants = self.experiment.resume_variants
+        total_weight = sum(variant.weight for variant in variants)
+        quotas = {
+            variant.id: limit * variant.weight // total_weight for variant in variants
+        }
+        remainder = limit - sum(quotas.values())
+        ranked = sorted(
+            enumerate(variants),
+            key=lambda item: (-(limit * item[1].weight % total_weight), item[0]),
+        )
+        for _, variant in ranked[:remainder]:
+            quotas[variant.id] += 1
+        return quotas
+
     def _apply_resume(
         self,
         resume: datatypes.Resume,
         user: datatypes.User,
         seen_employers: set[str],
     ) -> None:
-        if self.experiment.resume_enabled:
-            configured_ids = {
-                variant.resume_id for variant in self.experiment.resume_variants
-            }
-            if resume.get("id") not in configured_ids:
-                logger.debug("Skipping resume outside active experiment")
-                return
-        super()._apply_resume(resume, user, seen_employers)
+        if not self.experiment.resume_enabled:
+            super()._apply_resume(resume, user, seen_employers)
+            return
+
+        variant = next(
+            (
+                item
+                for item in self.experiment.resume_variants
+                if item.resume_id == resume.get("id")
+            ),
+            None,
+        )
+        if variant is None:
+            logger.debug("Skipping resume outside active experiment")
+            return
+
+        original_limit = self.max_responses
+        if original_limit is None:
+            super()._apply_resume(resume, user, seen_employers)
+            return
+
+        quota = self._resume_quotas(original_limit)[variant.id]
+        if quota == 0:
+            logger.info(
+                "Experiment %s allocated zero responses to resume variant %s",
+                self.experiment.name,
+                variant.id,
+            )
+            return
+
+        # Base apply processes resumes sequentially and uses a global cap. Without
+        # this per-variant cap the first resume could consume the entire run and
+        # invalidate a resume A/B test. Do not reallocate an under-filled quota:
+        # keeping planned weights is more important than maximizing volume.
+        self.max_responses = self.responses_sent + quota
+        try:
+            logger.info(
+                "Experiment %s resume variant %s quota=%d",
+                self.experiment.name,
+                variant.id,
+                quota,
+            )
+            super()._apply_resume(resume, user, seen_employers)
+        finally:
+            self.max_responses = original_limit
 
     def _should_skip_vacancy_basic(
         self,

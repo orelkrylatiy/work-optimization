@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
 
 VARIANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$")
 EXPERIMENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -325,7 +326,7 @@ class ApplyExperimentTracker:
         failure_kind: str | None,
         sent: bool,
     ) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self.conn.execute(
             """
             UPDATE apply_experiment_assignments

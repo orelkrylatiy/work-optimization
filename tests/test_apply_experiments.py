@@ -78,9 +78,7 @@ def test_config_rejects_resume_test_without_two_variants() -> None:
             {
                 "enabled": True,
                 "name": "bad_exp",
-                "resumes": {
-                    "variants": [{"id": "only", "resume_id": "resume-1"}]
-                },
+                "resumes": {"variants": [{"id": "only", "resume_id": "resume-1"}]},
             },
             profile_key="account1",
         )

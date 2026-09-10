@@ -453,11 +453,6 @@ class ReplyWorker:
     def send_reply(self, decision: ReplyDecision, text: str) -> bool:
         if self.config.dry_run:
             return True
-        key = deterministic_idempotency_key(
-            decision.chat_id,
-            decision.expected_last_message_id,
-        )
-        payload = {"idempotency_key": key, "text": text}
         for attempt in range(self.config.send_retries + 1):
             try:
                 self.hh.call_api(

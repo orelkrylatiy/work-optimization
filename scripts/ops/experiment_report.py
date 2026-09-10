@@ -60,9 +60,7 @@ def _finalize(metrics: dict[str, Any]) -> dict[str, Any]:
     decisions = invitations + discards
     metrics["invitation_rate"] = round(invitations / sent, 4) if sent else None
     metrics["decision_rate"] = round(decisions / sent, 4) if sent else None
-    metrics["invitation_given_decision"] = (
-        round(invitations / decisions, 4) if decisions else None
-    )
+    metrics["invitation_given_decision"] = round(invitations / decisions, 4) if decisions else None
     return metrics
 
 
@@ -128,17 +126,14 @@ def _read_profile(db_path: Path) -> dict[str, Any]:
             }
         _accumulate(buckets[experiment]["cover_letters"][row["cover_variant"]], row)
         _accumulate(buckets[experiment]["resumes"][row["resume_variant"]], row)
-        _accumulate(
-            buckets[experiment]["actual_cover_modes"][row["cover_actual_mode"]], row
-        )
+        _accumulate(buckets[experiment]["actual_cover_modes"][row["cover_actual_mode"]], row)
         cell = f"{row['resume_variant']}|{row['cover_variant']}"
         _accumulate(buckets[experiment]["cells"][cell], row)
 
     for experiment, dimensions in buckets.items():
         experiments[experiment] = {
             dimension: {
-                variant: _finalize(metrics)
-                for variant, metrics in sorted(variants.items())
+                variant: _finalize(metrics) for variant, metrics in sorted(variants.items())
             }
             for dimension, variants in dimensions.items()
         }
@@ -197,9 +192,7 @@ def main() -> int:
         if args.config_dir
         else Path(os.environ.get("CONFIG_DIR", root / "config")).resolve()
     )
-    output = (
-        args.output.resolve() if args.output else (root / "ops" / "experiments.json")
-    )
+    output = args.output.resolve() if args.output else (root / "ops" / "experiments.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = build_report(config_dir)
     output.write_text(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# apply.sh — bounded HH vacancy applications with AI cover letters.
+# apply.sh — bounded HH vacancy applications with A/B tracking and AI fallback.
 
 set -euo pipefail
 
@@ -89,9 +89,14 @@ Usage: apply.sh [--dry-run|--live] [options]
   --per-page N           Search results per page (default: 50).
   --pages N              Maximum search pages (default: 20).
   --timeout SECONDS      Upper bound for the whole batch (default: 3600).
-  --system-prompt FILE   AI system prompt template.
+  --system-prompt FILE   Default AI system prompt.
   --excluded-filter REGEX
   --profile ID
+
+The production path uses the experiment-aware apply operation. If cover-letter
+AI is unavailable, the worker falls back to the ordinary randomized template
+instead of dropping the vacancy. Optional A/B experiments are configured per
+profile in config.json under "apply_experiments".
 
 The scan depth is intentionally independent from --limit. This lets the worker
 skip irrelevant/already-applied vacancies and continue until it reaches the
@@ -139,7 +144,9 @@ CHECK_ARGS=(--purpose cover-letter)
 if [[ -n "$PROFILE_ID" ]]; then
     CHECK_ARGS+=(--profile "$PROFILE_ID")
 fi
-python3 "$SCRIPT_DIR/check_ai.py" "${CHECK_ARGS[@]}"
+if ! python3 "$SCRIPT_DIR/check_ai.py" "${CHECK_ARGS[@]}"; then
+    echo "Cover-letter AI preflight failed; continuing with template fallback enabled" >&2
+fi
 
 HH_CMD=(hh-applicant-tool --no-auto-auth)
 if [[ -n "$PROFILE_ID" ]]; then
@@ -152,7 +159,7 @@ if [[ "$RUN_MODE" == "dry-run" ]]; then
 fi
 
 APPLY_CMD=(
-    "${HH_CMD[@]}" apply-vacancies
+    "${HH_CMD[@]}" apply-experiment
     --search "$SEARCH_QUERY"
     --ai
     --system-prompt "$RENDERED_SYSTEM_PROMPT"

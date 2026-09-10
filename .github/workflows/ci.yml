@@ -176,7 +176,7 @@ jobs:
         run: |
           bash scripts/apply.sh --help >/dev/null
           bash scripts/reply.sh --help >/dev/null
-          hh-applicant-tool apply-experiment --help >/dev/null
+          PYTHONPATH=src python3 -m hh_applicant_tool apply-experiment --help >/dev/null
           HH_AUTOMATION_MODE=off bash scripts/cron-job.sh apply >/dev/null
           python3 scripts/ops/daily_report.py --date today --root "$(mktemp -d)" --output-dir "$(mktemp -d)" >/dev/null
           python3 scripts/ops/experiment_report.py --root "$(mktemp -d)" --config-dir "$(mktemp -d)" --output "$(mktemp)" >/dev/null

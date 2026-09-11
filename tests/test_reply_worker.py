@@ -46,6 +46,10 @@ def _detail(*messages: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _messages_response(*messages: dict[str, Any]) -> dict[str, Any]:
+    return {"items": list(messages), "pages": 1}
+
+
 def _decision() -> ReplyDecision:
     return ReplyDecision(
         chat_id="chat-1",
@@ -224,6 +228,27 @@ def test_hhcli_call_api_parses_json_and_formulates_json_post(monkeypatch) -> Non
     assert json.loads(command[command.index("--data") + 1]) == {"text": "Привет"}
 
 
+def test_hhcli_call_api_formulates_negotiation_form_post(monkeypatch) -> None:
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="{}",
+        stderr="",
+    )
+    run = Mock(return_value=completed)
+    monkeypatch.setattr("hh_applicant_tool.automation.reply_worker.subprocess.run", run)
+
+    HHCLI().call_api(
+        "/negotiations/chat-1/messages",
+        method="POST",
+        form_params={"message": "Привет"},
+    )
+
+    command = run.call_args.args[0]
+    assert command[-1] == "message=Привет"
+    assert "--data" not in command
+
+
 def test_hhcli_call_api_wraps_process_and_json_errors(monkeypatch) -> None:
     monkeypatch.setattr(
         "hh_applicant_tool.automation.reply_worker.subprocess.run",
@@ -248,32 +273,44 @@ def test_hhcli_call_api_wraps_process_and_json_errors(monkeypatch) -> None:
         HHCLI().call_api("/me")
 
 
-def test_collect_candidate_chats_only_keeps_unblocked_employer_turns() -> None:
-    hh = Mock()
-    hh.call_api.return_value = {
+def test_collect_candidate_chats_only_keeps_messageable_employer_turns() -> None:
+    negotiations = {
         "items": [
             {
                 "id": "reply-me",
-                "type": "NEGOTIATION",
-                "block_reason": None,
-                "last_message": _message("1", EMPLOYER_ROLE, "Привет", "2026-01-01"),
+                "messaging_status": "ok",
+                "state": {"id": "response"},
             },
             {
                 "id": "already-replied",
-                "type": "NEGOTIATION",
-                "block_reason": None,
-                "last_message": _message("2", APPLICANT_ROLE, "Ответ", "2026-01-01"),
+                "messaging_status": "ok",
+                "state": {"id": "response"},
+            },
+            {
+                "id": "discarded",
+                "messaging_status": "ok",
+                "state": {"id": "discard"},
             },
             {
                 "id": "blocked",
-                "type": "NEGOTIATION",
-                "block_reason": "BLOCKED",
-                "last_message": _message("3", EMPLOYER_ROLE, "Привет", "2026-01-01"),
+                "messaging_status": "disabled_by_employer",
+                "state": {"id": "response"},
             },
-            {"id": "wrong-type", "type": "OTHER", "last_message": {}},
         ],
         "pages": 1,
     }
+
+    def call_api(endpoint: str, **_kwargs) -> dict[str, Any]:
+        if endpoint.startswith("/negotiations?page="):
+            return negotiations
+        if endpoint == "/negotiations/reply-me/messages?page=0":
+            return _messages_response(_message("1", EMPLOYER_ROLE, "Привет", "2026-01-01T10:00:00"))
+        if endpoint == "/negotiations/already-replied/messages?page=0":
+            return _messages_response(_message("2", APPLICANT_ROLE, "Ответ", "2026-01-01T10:00:00"))
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    hh = Mock()
+    hh.call_api.side_effect = call_api
     worker = ReplyWorker(
         ReplyWorkerConfig(max_chats=100),
         hh=hh,
@@ -288,16 +325,21 @@ def test_collect_candidate_chats_only_keeps_unblocked_employer_turns() -> None:
 
 def test_make_decision_builds_context_and_vacancy_metadata() -> None:
     hh = Mock()
-    hh.call_api.side_effect = [
-        _detail(
-            _message("applicant-1", APPLICANT_ROLE, "Здравствуйте", "2026-01-01T10:00:00"),
-            _message("employer-1", EMPLOYER_ROLE, "Когда созвон?", "2026-01-01T10:01:00"),
-        ),
-        {"name": "React developer", "employer": {"name": "Acme"}},
-    ]
+    hh.call_api.return_value = _messages_response(
+        _message("applicant-1", APPLICANT_ROLE, "Здравствуйте", "2026-01-01T10:00:00"),
+        _message("employer-1", EMPLOYER_ROLE, "Когда созвон?", "2026-01-01T10:01:00"),
+    )
     worker = ReplyWorker(ReplyWorkerConfig(), hh=hh, ai=None, system_prompt="prompt")
 
-    decision = worker.make_decision({"id": "chat-1"})
+    decision = worker.make_decision(
+        {
+            "id": "chat-1",
+            "vacancy": {
+                "name": "React developer",
+                "employer": {"name": "Acme"},
+            },
+        }
+    )
 
     assert decision is not None
     assert decision.expected_last_message_id == "employer-1"
@@ -307,14 +349,11 @@ def test_make_decision_builds_context_and_vacancy_metadata() -> None:
     assert decision.employer_name == "Acme"
 
 
-def test_make_decision_fails_closed_when_write_is_not_allowed() -> None:
-    detail = _detail(_message("employer-1", EMPLOYER_ROLE, "Привет", "2026-01-01"))
-    detail["chat_states"] = {"write_message_state": {"allowed": False}}
-    hh = Mock()
-    hh.call_api.return_value = detail
-    worker = ReplyWorker(ReplyWorkerConfig(), hh=hh, ai=None, system_prompt="prompt")
+def test_write_allowed_respects_explicit_block() -> None:
+    worker = ReplyWorker(ReplyWorkerConfig(), hh=Mock(), ai=None, system_prompt="prompt")
+    detail = {"chat_states": {"write_message_state": {"allowed": False}}}
 
-    assert worker.make_decision({"id": "chat-1"}) is None
+    assert worker._write_allowed(detail) is False
 
 
 def test_generate_reply_returns_safe_first_attempt() -> None:
@@ -357,7 +396,7 @@ def test_generate_reply_fails_closed_on_ai_error() -> None:
 
 def test_is_still_current_accepts_same_employer_turn() -> None:
     hh = Mock()
-    hh.call_api.return_value = _detail(
+    hh.call_api.return_value = _messages_response(
         _message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00")
     )
 
@@ -366,7 +405,7 @@ def test_is_still_current_accepts_same_employer_turn() -> None:
 
 def test_is_still_current_fails_closed_when_chat_changed() -> None:
     hh = Mock()
-    hh.call_api.return_value = _detail(
+    hh.call_api.return_value = _messages_response(
         _message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00"),
         _message("applicant-2", APPLICANT_ROLE, "Уже ответил вручную", "2026-01-01T10:01:00"),
     )
@@ -374,7 +413,7 @@ def test_is_still_current_fails_closed_when_chat_changed() -> None:
     assert _live_worker(hh=hh).is_still_current(_decision()) is False
 
 
-def test_send_uses_common_chat_json_and_deterministic_idempotency_key() -> None:
+def test_send_uses_negotiation_form_payload() -> None:
     calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
     class FakeHH:
@@ -384,20 +423,19 @@ def test_send_uses_common_chat_json_and_deterministic_idempotency_key() -> None:
             *,
             method: str = "GET",
             json_data: dict[str, Any] | None = None,
+            form_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
-            calls.append((endpoint, method, json_data))
+            del json_data
+            calls.append((endpoint, method, form_params))
             return {"id": "sent-1"}
 
     worker = _live_worker(hh=FakeHH())  # type: ignore[arg-type]
 
     assert worker.send_reply(_decision(), "Готов созвониться завтра") is True
     endpoint, method, payload = calls[0]
-    assert endpoint == "/common/chats/chat-1/messages"
+    assert endpoint == "/negotiations/chat-1/messages"
     assert method == "POST"
-    assert payload == {
-        "idempotency_key": deterministic_idempotency_key("chat-1", "employer-1"),
-        "text": "Готов созвониться завтра",
-    }
+    assert payload == {"message": "Готов созвониться завтра"}
 
 
 def test_failed_send_is_treated_as_success_if_message_is_already_visible() -> None:
@@ -408,10 +446,12 @@ def test_failed_send_is_treated_as_success_if_message_is_already_visible() -> No
             *,
             method: str = "GET",
             json_data: dict[str, Any] | None = None,
+            form_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
+            del endpoint, json_data, form_params
             if method == "POST":
                 raise HHCLIError("network response lost")
-            return _detail(
+            return _messages_response(
                 _message(
                     "applicant-2",
                     APPLICANT_ROLE,
@@ -433,10 +473,14 @@ def test_failed_send_returns_false_when_message_is_not_visible() -> None:
             *,
             method: str = "GET",
             json_data: dict[str, Any] | None = None,
+            form_params: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
+            del endpoint, json_data, form_params
             if method == "POST":
                 raise HHCLIError("network down")
-            return _detail(_message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00"))
+            return _messages_response(
+                _message("employer-1", EMPLOYER_ROLE, "Вопрос", "2026-01-01T10:00:00")
+            )
 
     worker = _live_worker(hh=FakeHH(), send_retries=0)  # type: ignore[arg-type]
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate one aggregate runtime snapshot and publish only ops/ files to GitHub.
+# Generate aggregate runtime snapshots and publish only ops/ files to GitHub.
 # Intended for a clean VPS/host clone that has git credentials configured.
 set -euo pipefail
 
@@ -40,13 +40,18 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
 git pull --ff-only origin "$BRANCH"
 
 REPORT_PATH="$(OPS_TIMEZONE="$TIMEZONE" "$PYTHON_BIN" scripts/ops/daily_report.py --date "$DATE_SPEC" --timezone "$TIMEZONE")"
+EXPERIMENT_PATH="$("$PYTHON_BIN" scripts/ops/experiment_report.py)"
 if [[ ! -f "$REPORT_PATH" ]]; then
     echo "ops publish: report was not created: $REPORT_PATH" >&2
     exit 1
 fi
+if [[ ! -f "$EXPERIMENT_PATH" ]]; then
+    echo "ops publish: experiment report was not created: $EXPERIMENT_PATH" >&2
+    exit 1
+fi
 
-git add -- "$REPORT_PATH" ops/latest.json
-if git diff --cached --quiet -- "$REPORT_PATH" ops/latest.json; then
+git add -- "$REPORT_PATH" ops/latest.json "$EXPERIMENT_PATH"
+if git diff --cached --quiet -- "$REPORT_PATH" ops/latest.json "$EXPERIMENT_PATH"; then
     echo "ops publish: no changes for $DATE_SPEC"
     exit 0
 fi
@@ -54,6 +59,6 @@ fi
 REPORT_DATE="$(basename "$REPORT_PATH" .json)"
 # Keep quality checks from the repository hook, but do not let that hook rebuild
 # a `today` snapshot while we are intentionally publishing another date.
-OPS_SKIP_HOOK_SNAPSHOT=1 git commit -m "ops: daily snapshot $REPORT_DATE" -- "$REPORT_PATH" ops/latest.json
+OPS_SKIP_HOOK_SNAPSHOT=1 git commit -m "ops: daily snapshot $REPORT_DATE" -- "$REPORT_PATH" ops/latest.json "$EXPERIMENT_PATH"
 git push origin "$BRANCH"
-echo "ops publish: published $REPORT_PATH"
+echo "ops publish: published $REPORT_PATH and $EXPERIMENT_PATH"

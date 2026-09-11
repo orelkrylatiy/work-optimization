@@ -1,6 +1,6 @@
 #!/bin/sh
-# Repository hook: keep normal pre-commit quality checks and stage a fresh ops
-# snapshot into ordinary commits. Snapshot failures are non-blocking.
+# Repository hook: keep normal pre-commit quality checks and stage fresh ops
+# snapshots into ordinary commits. Snapshot failures are non-blocking.
 set -u
 
 ROOT="$(git rev-parse --show-toplevel)" || exit 0
@@ -26,19 +26,29 @@ fi
 
 PY="$(command -v python3 || command -v python)" || PY=""
 if [ -z "${PY:-}" ]; then
-    echo "pre-commit: python not found; ops snapshot skipped" >&2
+    echo "pre-commit: python not found; ops snapshots skipped" >&2
     exit 0
 fi
 
 if ! REPORT="$("$PY" "$ROOT/scripts/ops/daily_report.py" --date today 2>/dev/null)"; then
-    echo "pre-commit: daily_report.py failed; committing without fresh ops snapshot" >&2
+    echo "pre-commit: daily_report.py failed; committing without fresh daily snapshot" >&2
     exit 0
 fi
 
+if ! EXPERIMENT_REPORT="$("$PY" "$ROOT/scripts/ops/experiment_report.py" 2>/dev/null)"; then
+    echo "pre-commit: experiment_report.py failed; committing without fresh experiment snapshot" >&2
+    EXPERIMENT_REPORT=""
+fi
+
 git -C "$ROOT" add -- ops/latest.json ops/daily >/dev/null 2>&1 || {
-    echo "pre-commit: could not stage ops snapshot; continuing" >&2
+    echo "pre-commit: could not stage daily ops snapshot; continuing" >&2
     exit 0
 }
+if [ -n "$EXPERIMENT_REPORT" ]; then
+    git -C "$ROOT" add -- ops/experiments.json >/dev/null 2>&1 || {
+        echo "pre-commit: could not stage experiment snapshot; continuing" >&2
+    }
+fi
 
-echo "pre-commit: ops snapshot staged (${REPORT:-ops/latest.json})"
+echo "pre-commit: ops snapshots staged (${REPORT:-ops/latest.json})"
 exit 0

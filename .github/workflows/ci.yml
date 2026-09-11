@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, "review/**", "docs/**", "ops/**"]
+    branches: [main, develop, "review/**", "docs/**", "ops/**", "feat/**"]
   pull_request:
     branches: [main, develop]
 
@@ -40,13 +40,17 @@ jobs:
           ruff check \
             src/hh_applicant_tool/automation \
             src/hh_applicant_tool/ai/openai.py \
+            src/hh_applicant_tool/operations/apply_experiment.py \
             scripts/reply_iterative_ai.py \
             scripts/check_ai.py \
             scripts/ops/daily_report.py \
+            scripts/ops/experiment_report.py \
             tests/test_reply_worker.py \
             tests/test_ai_openai_retry.py \
             tests/test_check_ai.py \
             tests/test_ops_daily_report.py \
+            tests/test_apply_experiments.py \
+            tests/test_apply_experiment_operation.py \
             --output-format=github
 
       - name: Ruff format critical automation paths
@@ -54,13 +58,17 @@ jobs:
           ruff format --check \
             src/hh_applicant_tool/automation \
             src/hh_applicant_tool/ai/openai.py \
+            src/hh_applicant_tool/operations/apply_experiment.py \
             scripts/reply_iterative_ai.py \
             scripts/check_ai.py \
             scripts/ops/daily_report.py \
+            scripts/ops/experiment_report.py \
             tests/test_reply_worker.py \
             tests/test_ai_openai_retry.py \
             tests/test_check_ai.py \
-            tests/test_ops_daily_report.py
+            tests/test_ops_daily_report.py \
+            tests/test_apply_experiments.py \
+            tests/test_apply_experiment_operation.py
 
       - name: Type check automation layer
         run: basedpyright src/hh_applicant_tool/automation
@@ -77,6 +85,9 @@ jobs:
 
       - name: Runtime snapshot regression tests
         run: pytest tests/test_ops_daily_report.py
+
+      - name: Apply experiment regression tests
+        run: pytest tests/test_apply_experiments.py tests/test_apply_experiment_operation.py
 
       - name: Report legacy lint debt
         continue-on-error: true
@@ -131,6 +142,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install Python project for CLI smoke
+        run: python3 -m pip install -e .
       - name: Parse automation scripts
         run: |
           bash -n \
@@ -165,8 +178,10 @@ jobs:
         run: |
           bash scripts/apply.sh --help >/dev/null
           bash scripts/reply.sh --help >/dev/null
+          PYTHONPATH=src python3 -m hh_applicant_tool apply-experiment --help >/dev/null
           HH_AUTOMATION_MODE=off bash scripts/cron-job.sh apply >/dev/null
           python3 scripts/ops/daily_report.py --date today --root "$(mktemp -d)" --output-dir "$(mktemp -d)" >/dev/null
+          python3 scripts/ops/experiment_report.py --root "$(mktemp -d)" --config-dir "$(mktemp -d)" --output "$(mktemp)" >/dev/null
       - name: Smoke-test cron runtime environment
         run: |
           runtime_env="$(mktemp)"
